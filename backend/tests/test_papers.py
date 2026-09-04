@@ -12,6 +12,7 @@ from app.services.papers.pdf_resolve import (
 )
 from app.services.papers.search import (
     abstract_from_inverted,
+    paper_from_crossref,
     paper_from_openalex,
     paper_from_semantic_scholar,
     search_papers,
@@ -101,6 +102,59 @@ def test_search_falls_back_when_ss_errors():
     hits, provider = search_papers("dropout", get_json=get_json)
     assert provider == "openalex"
     assert hits[0].title == "Fallback paper"
+
+
+def test_search_falls_back_to_crossref_when_ss_and_openalex_fail():
+    def get_json(url, params=None, headers=None, timeout=None):
+        if "semanticscholar" in url or "openalex" in url:
+            raise RuntimeError("429")
+        return {
+            "message": {
+                "items": [
+                    {
+                        "DOI": "10.1/dl",
+                        "title": ["Deep Learning"],
+                        "author": [{"given": "Yoshua", "family": "Bengio"}],
+                        "issued": {"date-parts": [[2015]]},
+                        "container-title": ["Nature"],
+                        "is-referenced-by-count": 12,
+                        "URL": "https://doi.org/10.1/dl",
+                    }
+                ]
+            }
+        }
+
+    hits, provider = search_papers("deep learning", get_json=get_json)
+    assert provider == "crossref"
+    assert hits[0].title == "Deep Learning"
+    assert hits[0].authors[0] == "Yoshua Bengio"
+    assert hits[0].year == 2015
+
+
+def test_search_all_providers_fail_returns_empty():
+    def get_json(url, params=None, headers=None, timeout=None):
+        raise RuntimeError("429 Too Many Requests")
+
+    hits, provider = search_papers("deep learning", get_json=get_json)
+    assert hits == []
+    assert provider in {"semantic_scholar", "openalex", "crossref"}
+
+
+def test_paper_from_crossref():
+    hit = paper_from_crossref(
+        {
+            "DOI": "10.1/x",
+            "title": ["A Survey of Deep Learning"],
+            "author": [{"given": "Ian", "family": "Goodfellow"}],
+            "published-print": {"date-parts": [[2016, 1]]},
+            "container-title": ["Book"],
+            "URL": "https://doi.org/10.1/x",
+        }
+    )
+    assert hit is not None
+    assert hit.source == "crossref"
+    assert hit.paper_id == "10.1/x"
+    assert hit.year == 2016
 
 
 def test_import_abstract_snapshot(kb):

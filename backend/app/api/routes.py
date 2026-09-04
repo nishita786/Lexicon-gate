@@ -225,7 +225,14 @@ def papers_search(
     query = q.strip()
     if not query:
         raise HTTPException(status_code=400, detail="Search query is required.")
-    papers, provider = search_papers(query, limit=limit)
+    try:
+        papers, provider = search_papers(query, limit=limit)
+    except Exception as exc:
+        logger.exception("Paper search failed")
+        raise HTTPException(
+            status_code=502,
+            detail="Paper search is temporarily unavailable. Try again in a few seconds.",
+        ) from exc
     return PaperSearchResponse(query=query, provider=provider, papers=papers)
 
 

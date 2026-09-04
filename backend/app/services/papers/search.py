@@ -1,4 +1,4 @@
-"""Semantic Scholar + OpenAlex paper search.
+"""Semantic Scholar + OpenAlex paper search, with Crossref as a last resort.
 
 Google Scholar is not queried. Hits are normalized to ``PaperHit``.
 """
@@ -6,8 +6,10 @@ Google Scholar is not queried. Hits are normalized to ``PaperHit``.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from typing import Any, Callable
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import httpx
 
@@ -23,21 +25,63 @@ SS_FIELDS = (
 )
 OPENALEX_WORKS = "https://api.openalex.org/works"
 OPENALEX_WORK = "https://api.openalex.org/works/{paper_id}"
+CROSSREF_WORKS = "https://api.crossref.org/works"
+CROSSREF_WORK = "https://api.crossref.org/works/{paper_id}"
+
+RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+MAX_RETRIES = 3
+MAX_RETRY_WAIT_S = 2.5
+HOST_MIN_INTERVAL_S = 1.05
 
 JsonGetter = Callable[..., dict[str, Any]]
 BytesGetter = Callable[..., tuple[bytes, str]]
+
+_host_lock = threading.Lock()
+_host_last: dict[str, float] = {}
+_cache_lock = threading.Lock()
+_search_cache: dict[tuple[str, int], tuple[float, list[PaperHit], str]] = {}
+CACHE_TTL_S = 120.0
 
 
 def _timeout(settings: Settings | None = None) -> float:
     return float((settings or get_settings()).paper_search_timeout_s)
 
 
+def _contact_email(settings: Settings | None = None) -> str:
+    settings = settings or get_settings()
+    return (settings.unpaywall_email or "selfrag@localhost").strip() or "selfrag@localhost"
+
+
 def _ss_headers(settings: Settings | None = None) -> dict[str, str]:
     settings = settings or get_settings()
-    headers = {"User-Agent": "Enhanced-Self-RAG/1.0"}
+    headers = {"User-Agent": f"Enhanced-Self-RAG/1.0 (mailto:{_contact_email(settings)})"}
     if settings.semantic_scholar_api_key:
         headers["x-api-key"] = settings.semantic_scholar_api_key
     return headers
+
+
+def openalex_headers(settings: Settings | None = None) -> dict[str, str]:
+    return {"User-Agent": f"Enhanced-Self-RAG/1.0 (mailto:{_contact_email(settings)})"}
+
+
+def _pace(url: str) -> None:
+    host = urlparse(url).netloc
+    with _host_lock:
+        now = time.monotonic()
+        wait = HOST_MIN_INTERVAL_S - (now - _host_last.get(host, 0.0))
+        if wait > 0:
+            time.sleep(wait)
+        _host_last[host] = time.monotonic()
+
+
+def _retry_wait(response: httpx.Response, attempt: int) -> float:
+    header = response.headers.get("Retry-After")
+    if header:
+        try:
+            return min(MAX_RETRY_WAIT_S, max(0.2, float(header)))
+        except ValueError:
+            pass
+    return min(MAX_RETRY_WAIT_S, 0.8 * (2**attempt))
 
 
 def default_get_json(
@@ -46,13 +90,41 @@ def default_get_json(
     headers: dict[str, str] | None = None,
     timeout: float | None = None,
 ) -> dict[str, Any]:
-    with httpx.Client(timeout=timeout or _timeout(), follow_redirects=True) as client:
-        response = client.get(url, params=params, headers=headers or {})
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, dict):
-            return {"data": payload}
-        return payload
+    last_error: Exception | None = None
+    for attempt in range(MAX_RETRIES):
+        _pace(url)
+        try:
+            with httpx.Client(timeout=timeout or _timeout(), follow_redirects=True) as client:
+                response = client.get(url, params=params, headers=headers or {})
+                # 429: fail over to the next index instead of stalling the search.
+                if (
+                    response.status_code in RETRYABLE_STATUS
+                    and response.status_code != 429
+                    and attempt < MAX_RETRIES - 1
+                ):
+                    wait = _retry_wait(response, attempt)
+                    logger.warning(
+                        "Retrying %s after HTTP %s (wait %.1fs)",
+                        urlparse(url).path,
+                        response.status_code,
+                        wait,
+                    )
+                    time.sleep(wait)
+                    continue
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    return {"data": payload}
+                return payload
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            last_error = exc
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(min(MAX_RETRY_WAIT_S, 0.8 * (2**attempt)))
+                continue
+            raise
+    if last_error:
+        raise last_error
+    raise RuntimeError(f"Request failed: {url}")
 
 
 DOWNLOAD_HEADERS = {
@@ -92,24 +164,55 @@ def search_papers(
     get_json: JsonGetter | None = None,
     settings: Settings | None = None,
 ) -> tuple[list[PaperHit], str]:
-    """Return (hits, provider_used). Falls back to OpenAlex when SS is empty or errors."""
+    """Return (hits, provider_used). Falls back when a provider is empty or errors."""
 
     query = (query or "").strip()
     if not query:
         return [], "none"
+    injected = get_json is not None
     get_json = get_json or default_get_json
     settings = settings or get_settings()
     limit = max(1, min(int(limit), 25))
+    cache_key = (query.lower(), limit)
+    if not injected:
+        now = time.monotonic()
+        with _cache_lock:
+            cached = _search_cache.get(cache_key)
+            if cached and now - cached[0] < CACHE_TTL_S:
+                return cached[1], cached[2]
 
-    try:
-        hits = search_semantic_scholar(query, limit, get_json=get_json, settings=settings)
+    providers: list[tuple[str, Callable[[], list[PaperHit]]]] = [
+        (
+            "semantic_scholar",
+            lambda: search_semantic_scholar(
+                query, limit, get_json=get_json, settings=settings
+            ),
+        ),
+        (
+            "openalex",
+            lambda: search_openalex(query, limit, get_json=get_json, settings=settings),
+        ),
+        (
+            "crossref",
+            lambda: search_crossref(query, limit, get_json=get_json, settings=settings),
+        ),
+    ]
+
+    last_provider = "none"
+    for provider, run in providers:
+        last_provider = provider
+        try:
+            hits = run()
+        except Exception as exc:
+            logger.warning("%s search failed: %s", provider, exc)
+            continue
         if hits:
-            return hits, "semantic_scholar"
-    except Exception as exc:
-        logger.warning("Semantic Scholar search failed: %s", exc)
+            if not injected:
+                with _cache_lock:
+                    _search_cache[cache_key] = (time.monotonic(), hits, provider)
+            return hits, provider
 
-    hits = search_openalex(query, limit, get_json=get_json, settings=settings)
-    return hits, "openalex"
+    return [], last_provider
 
 
 def search_semantic_scholar(
@@ -126,7 +229,7 @@ def search_semantic_scholar(
         timeout=_timeout(settings),
     )
     rows = payload.get("data") or []
-    return [hit for row in rows if (hit := paper_from_semantic_scholar(row))]
+    return [hit for row in rows if (hit := paper_from_semantic_scholar(row))][:limit]
 
 
 def search_openalex(
@@ -136,14 +239,33 @@ def search_openalex(
     get_json: JsonGetter,
     settings: Settings,
 ) -> list[PaperHit]:
+    email = _contact_email(settings)
     payload = get_json(
         OPENALEX_WORKS,
-        params={"search": query, "per_page": limit},
-        headers={"User-Agent": "Enhanced-Self-RAG/1.0"},
+        params={"search": query, "per_page": limit, "mailto": email},
+        headers=openalex_headers(settings),
         timeout=_timeout(settings),
     )
     rows = payload.get("results") or []
-    return [hit for row in rows if (hit := paper_from_openalex(row))]
+    return [hit for row in rows if (hit := paper_from_openalex(row))][:limit]
+
+
+def search_crossref(
+    query: str,
+    limit: int,
+    *,
+    get_json: JsonGetter,
+    settings: Settings,
+) -> list[PaperHit]:
+    payload = get_json(
+        CROSSREF_WORKS,
+        params={"query": query, "rows": limit},
+        headers=openalex_headers(settings),
+        timeout=_timeout(settings),
+    )
+    message = payload.get("message") if isinstance(payload.get("message"), dict) else payload
+    rows = (message or {}).get("items") or []
+    return [hit for row in rows if (hit := paper_from_crossref(row))][:limit]
 
 
 def fetch_paper(
@@ -169,11 +291,27 @@ def fetch_paper(
             oid = oid.rsplit("/", 1)[-1]
         payload = get_json(
             OPENALEX_WORK.format(paper_id=oid),
-            headers={"User-Agent": "Enhanced-Self-RAG/1.0"},
+            headers=openalex_headers(settings),
             timeout=_timeout(settings),
         )
         return paper_from_openalex(payload)
+    if source == "crossref":
+        doi = paper_id.removeprefix("https://doi.org/").removeprefix("http://doi.org/")
+        payload = get_json(
+            CROSSREF_WORK.format(paper_id=quote(doi, safe="")),
+            headers=openalex_headers(settings),
+            timeout=_timeout(settings),
+        )
+        message = payload.get("message") if isinstance(payload.get("message"), dict) else payload
+        return paper_from_crossref(message if isinstance(message, dict) else payload)
     return None
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def paper_from_semantic_scholar(row: dict[str, Any] | None) -> PaperHit | None:
@@ -199,7 +337,7 @@ def paper_from_semantic_scholar(row: dict[str, Any] | None) -> PaperHit | None:
         authors=authors,
         year=year_int,
         venue=(str(row["venue"]).strip() if row.get("venue") else None) or None,
-        citation_count=int(row.get("citationCount") or 0),
+        citation_count=_as_int(row.get("citationCount"), 0),
         abstract=(str(row["abstract"]).strip() if row.get("abstract") else None) or None,
         doi=str(doi).strip() if doi else None,
         pdf_url=pdf_url,
@@ -226,7 +364,6 @@ def paper_from_openalex(row: dict[str, Any] | None) -> PaperHit | None:
     source = loc.get("source") or {}
     if source.get("display_name"):
         venue = source["display_name"]
-    pdf_url = None
     oa = row.get("open_access") or {}
     best = row.get("best_oa_location") or {}
     pdf_url = best.get("pdf_url") or loc.get("pdf_url") or oa.get("oa_url")
@@ -246,13 +383,61 @@ def paper_from_openalex(row: dict[str, Any] | None) -> PaperHit | None:
         authors=authors,
         year=year_int,
         venue=venue,
-        citation_count=int(row.get("cited_by_count") or 0),
+        citation_count=_as_int(row.get("cited_by_count"), 0),
         abstract=abstract_from_inverted(row.get("abstract_inverted_index")),
         doi=doi or None,
         pdf_url=pdf_url,
         source="openalex",
         open_access=bool(pdf_url),
         url=raw_id or None,
+    )
+
+
+def paper_from_crossref(row: dict[str, Any] | None) -> PaperHit | None:
+    if not row:
+        return None
+    titles = row.get("title") or []
+    title = titles[0] if isinstance(titles, list) and titles else titles if isinstance(titles, str) else None
+    if not title:
+        return None
+    authors = []
+    for author in row.get("author") or []:
+        if not isinstance(author, dict):
+            continue
+        name = " ".join(part for part in (author.get("given"), author.get("family")) if part)
+        if name:
+            authors.append(name)
+    year_int = None
+    for key in ("published-print", "published-online", "published", "issued"):
+        parts = (row.get(key) or {}).get("date-parts") if isinstance(row.get(key), dict) else None
+        if parts and parts[0]:
+            try:
+                year_int = int(parts[0][0])
+            except (TypeError, ValueError, IndexError):
+                year_int = None
+            if year_int:
+                break
+    containers = row.get("container-title") or []
+    venue = containers[0] if isinstance(containers, list) and containers else None
+    doi = row.get("DOI")
+    abstract = row.get("abstract")
+    if isinstance(abstract, str):
+        abstract = abstract.replace("<jats:p>", " ").replace("</jats:p>", " ").strip() or None
+    else:
+        abstract = None
+    return PaperHit(
+        paper_id=str(doi or row.get("URL") or title),
+        title=str(title).strip(),
+        authors=authors,
+        year=year_int,
+        venue=str(venue).strip() if venue else None,
+        citation_count=_as_int(row.get("is-referenced-by-count"), 0),
+        abstract=abstract,
+        doi=str(doi).strip() if doi else None,
+        pdf_url=None,
+        source="crossref",
+        open_access=False,
+        url=row.get("URL"),
     )
 
 

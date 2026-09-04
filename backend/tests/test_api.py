@@ -165,6 +165,16 @@ def test_papers_search_endpoint(client: TestClient, monkeypatch):
     assert body["papers"][0]["title"] == "Dropout"
 
 
+def test_papers_search_does_not_500_when_indexes_fail(client: TestClient, monkeypatch):
+    def fake_search(query, limit=10, **kwargs):
+        return [], "crossref"
+
+    monkeypatch.setattr("app.api.routes.search_papers", fake_search)
+    response = client.get("/api/papers/search", params={"q": "deep learning"})
+    assert response.status_code == 200
+    assert response.json()["papers"] == []
+
+
 def test_papers_import_endpoint(client: TestClient, monkeypatch):
     from app.models.documents import Document
 

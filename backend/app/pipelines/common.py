@@ -137,6 +137,8 @@ def build_result(
     metrics: SystemMetrics,
     rewritten_queries: list[str] | None = None,
     config_snapshot: dict[str, Any] | None = None,
+    unrelated_to_sources: bool = False,
+    mismatch_detail: str | None = None,
 ) -> PipelineResult:
     return PipelineResult(
         query_id=query_id,
@@ -160,6 +162,8 @@ def build_result(
         trace=trace,
         metrics=metrics,
         config_snapshot=config_snapshot or {},
+        unrelated_to_sources=unrelated_to_sources,
+        mismatch_detail=mismatch_detail,
     )
 
 

@@ -124,7 +124,7 @@ function Ask({ docs, result, setResult, selected, setSelected, history, onQuerie
       <div className="page-title">
         <div>
           <h2>Ask</h2>
-          <p>One grounded answer, with citations, claim support, and confidence from the evidence.</p>
+          <p>Enhanced Self-RAG: retrieve, check evidence, draft, verify claims, then answer or refuse.</p>
         </div>
       </div>
 
@@ -201,7 +201,7 @@ function FindPapers({ onImported }) {
   async function search(event) {
     event?.preventDefault();
     const text = query.trim();
-    if (!text) return;
+    if (!text || busy) return;
     setBusy(true);
     setError("");
     setMessage("");
@@ -254,7 +254,7 @@ function FindPapers({ onImported }) {
       <div className="page-title">
         <div>
           <h2>Find papers</h2>
-          <p>Search Semantic Scholar (OpenAlex if needed). Add a paper to Library, then Ask with evidence.</p>
+          <p>Search academic indexes. Rate limits are retried automatically. Add a paper to Library, then Ask.</p>
         </div>
       </div>
       <form className="card" style={{ marginBottom: 16 }} onSubmit={search}>
@@ -419,6 +419,8 @@ function AnswerView({ result, docs, selected, onSelect }) {
   const usedIds = new Set((result.evidence || []).map((item) => item.document_id));
   const usedNames = new Set((result.evidence || []).map((item) => item.document_name));
   const unused = docs.filter((d) => !usedIds.has(d.document_id) && !usedNames.has(d.name));
+  const loopSteps = loopFromTrace(result.trace);
+  const contradictions = result.contradictions || [];
 
   function selectClaim(claim) {
     const cite = claim.supporting_citations?.[0] ?? claim.contradicting_citations?.[0];
@@ -429,11 +431,25 @@ function AnswerView({ result, docs, selected, onSelect }) {
     <>
       <div className="grid two" style={{ marginBottom: 16 }}>
         <div className="card">
+          <div className="loop-steps" aria-label="Self-RAG loop">
+            {loopSteps.map((step) => (
+              <div key={step.stage} className={`loop-step ${step.tone || ""}`}>
+                <span className="loop-step-label">{step.label}</span>
+                {step.detail && <span className="loop-step-detail">{step.detail}</span>}
+              </div>
+            ))}
+          </div>
           <div className="row" style={{ marginBottom: 8 }}>
             <span className={`flag ${status.tone}`}>{status.label}</span>
             {result.abstained && <span className="flag warn">Did not guess</span>}
+            {result.unrelated_to_sources && <span className="flag bad">Not in your files</span>}
           </div>
-          {result.status === "INSUFFICIENT_EVIDENCE" && (
+          {result.unrelated_to_sources && (
+            <p className="status" style={{ marginTop: 0 }}>
+              This question contradicts what the uploaded files can support: they do not cover it.
+            </p>
+          )}
+          {!result.unrelated_to_sources && result.status === "INSUFFICIENT_EVIDENCE" && (
             <p className="status" style={{ marginTop: 0 }}>
               The indexed files do not contain enough support for a reliable answer.
               Try another question or add a source that covers this topic.
@@ -445,6 +461,18 @@ function AnswerView({ result, docs, selected, onSelect }) {
             </p>
           )}
           <div className="answer">{result.answer}</div>
+          {result.unrelated_to_sources && (
+            <div className="mismatch">
+              <div>
+                <h3>Question</h3>
+                <p>{result.query}</p>
+              </div>
+              <div>
+                <h3>Your files</h3>
+                <p>{result.mismatch_detail || "Retrieved passages do not address this question."}</p>
+              </div>
+            </div>
+          )}
           <div className="meta">
             <span>Confidence <strong>{pct(conf.confidence)}</strong></span>
             <span>Evidence <strong>{pct(lastGate?.evidence_score ?? conf.evidence_coverage)}</strong></span>
@@ -454,6 +482,25 @@ function AnswerView({ result, docs, selected, onSelect }) {
           {conf.caveat && <p className="status">{conf.caveat}</p>}
           {result.hallucination?.flags?.length > 0 && (
             <p className="error">{result.hallucination.flags.join(" · ")}</p>
+          )}
+
+          {contradictions.length > 0 && (
+            <>
+              <h3 style={{ marginTop: 16 }}>Source contradictions</h3>
+              <ul className="plain-list">
+                {contradictions.map((pair, index) => (
+                  <li key={`${pair.citation_a}-${pair.citation_b}-${index}`} className="conflict-row">
+                    <span className="flag warn">Disagree</span>
+                    <div>
+                      <p>{pair.explanation}</p>
+                      <p className="status" style={{ margin: 0 }}>
+                        [{pair.citation_a}] {pair.document_a} vs [{pair.citation_b}] {pair.document_b}
+                      </p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
 
           {(result.claims || []).length > 0 && (
@@ -470,13 +517,19 @@ function AnswerView({ result, docs, selected, onSelect }) {
                       <span className={`flag ${CLAIM_TONE[claim.status] || ""}`}>{claim.status.replaceAll("_", " ")}</span>
                       <span>{claim.text}</span>
                     </button>
-                    {claimSources(claim, evidenceByCite).map((item) => (
-                      <CitationCard
-                        key={`${claim.claim_id}-${item.citation_id}`}
-                        item={item}
-                        snippet={claim.best_evidence_span}
-                        onOpen={() => onSelect(item)}
-                      />
+                    {claimCiteGroups(claim, evidenceByCite).map((group) => (
+                      <div key={`${claim.claim_id}-${group.role}`}>
+                        <div className="status" style={{ margin: "8px 0 0 8px" }}>{group.label}</div>
+                        {group.items.map((item) => (
+                          <CitationCard
+                            key={`${claim.claim_id}-${group.role}-${item.citation_id}`}
+                            item={item}
+                            snippet={claim.best_evidence_span}
+                            onOpen={() => onSelect(item)}
+                            role={group.role}
+                          />
+                        ))}
+                      </div>
                     ))}
                   </li>
                 ))}
@@ -489,26 +542,15 @@ function AnswerView({ result, docs, selected, onSelect }) {
           </button>
           {openCheck && (
             <ul className="trace compact">
-              <li>
-                <span className="dot" />
-                <div>
-                  Evidence gate: {lastGate?.action || "n/a"}
-                  {lastGate?.rationale && <div className="detail">{lastGate.rationale}</div>}
-                </div>
-              </li>
-              <li>
-                <span className="dot" />
-                <div>
-                  Retrieval attempts: {result.metrics?.retrieval_attempts ?? 0}
-                  {result.rewritten_queries?.length ? (
-                    <div className="detail">Rewrites: {result.rewritten_queries.join(" → ")}</div>
-                  ) : null}
-                </div>
-              </li>
-              <li>
-                <span className={`dot ${result.metrics?.correction_loops ? "warn" : ""}`} />
-                <div>Self-correct loops: {result.metrics?.correction_loops ?? 0}</div>
-              </li>
+              {(result.trace || []).map((event) => (
+                <li key={`${event.step}-${event.stage}`}>
+                  <span className={`dot ${event.status === "warn" ? "warn" : event.status === "skip" ? "skip" : ""}`} />
+                  <div>
+                    {event.label}
+                    {event.detail && <div className="detail">{event.detail}</div>}
+                  </div>
+                </li>
+              ))}
             </ul>
           )}
         </div>
@@ -554,10 +596,50 @@ function AnswerView({ result, docs, selected, onSelect }) {
   );
 }
 
-function claimSources(claim, evidenceByCite) {
-  const ids = [...(claim.supporting_citations || []), ...(claim.contradicting_citations || [])];
-  const unique = [...new Set(ids)];
-  return unique.map((id) => evidenceByCite.get(id)).filter(Boolean);
+function loopFromTrace(trace) {
+  const order = [
+    ["retrieval", "Retrieve"],
+    ["evidence_gate", "Evidence gate"],
+    ["generate", "Draft"],
+    ["verify", "Verify claims"],
+    ["correction", "Self-correct"],
+    ["contradiction", "Conflicts"],
+    ["abstain", "Refuse"],
+    ["final", "Final"],
+  ];
+  const byStage = new Map();
+  for (const event of trace || []) byStage.set(event.stage, event);
+  const steps = [];
+  for (const [stage, label] of order) {
+    const event = byStage.get(stage);
+    if (!event) continue;
+    const tone = event.status === "warn" ? "warn" : event.status === "skip" ? "" : "good";
+    steps.push({
+      stage,
+      label,
+      detail: event.label,
+      tone,
+    });
+  }
+  if (steps.length) return steps;
+  return [
+    { stage: "retrieval", label: "Retrieve", detail: "", tone: "" },
+    { stage: "evidence_gate", label: "Evidence gate", detail: "", tone: "" },
+    { stage: "verify", label: "Verify claims", detail: "", tone: "" },
+  ];
+}
+
+function claimCiteGroups(claim, evidenceByCite) {
+  const support = [...new Set(claim.supporting_citations || [])]
+    .map((id) => evidenceByCite.get(id))
+    .filter(Boolean);
+  const contra = [...new Set(claim.contradicting_citations || [])]
+    .map((id) => evidenceByCite.get(id))
+    .filter(Boolean);
+  const groups = [];
+  if (support.length) groups.push({ role: "supports", label: "Supports", items: support });
+  if (contra.length) groups.push({ role: "contradicts", label: "Contradicts", items: contra });
+  return groups;
 }
 
 async function copyText(text) {
@@ -570,7 +652,7 @@ async function copyText(text) {
   }
 }
 
-function CitationCard({ item, snippet, onOpen }) {
+function CitationCard({ item, snippet, onOpen, role }) {
   const [copied, setCopied] = useState("");
   const authors = (item.authors || []).join(", ") || "Unknown author";
   const year = item.year || "n.d.";
@@ -582,7 +664,7 @@ function CitationCard({ item, snippet, onOpen }) {
   }
 
   return (
-    <div className="cite-card">
+    <div className={`cite-card ${role === "contradicts" ? "contra" : ""}`}>
       <button type="button" className="cite-card-main" onClick={onOpen}>
         <div className="cite-card-title">{item.title || item.document_name}</div>
         <div className="status" style={{ margin: 0 }}>

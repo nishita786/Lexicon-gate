@@ -215,6 +215,8 @@ class PipelineResult(BaseModel):
     trace: list[TraceEvent] = Field(default_factory=list)
     metrics: SystemMetrics = Field(default_factory=SystemMetrics)
     config_snapshot: dict[str, Any] = Field(default_factory=dict)
+    unrelated_to_sources: bool = False
+    mismatch_detail: str | None = None
 
 
 class QueryRequest(BaseModel):

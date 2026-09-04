@@ -57,6 +57,9 @@ def test_evidence_gate_abstains_on_unrelated_mixture(kb):
     )
     assert outcome.decision.sufficient is False
     assert outcome.decision.action == "abstain"
+    from app.verification.evidence_gate import decision_is_unrelated
+
+    assert decision_is_unrelated(outcome.decision) is True
 
 
 def test_query_rewriting_targets_gaps():

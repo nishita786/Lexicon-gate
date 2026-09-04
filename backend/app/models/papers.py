@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-PaperSource = Literal["semantic_scholar", "openalex"]
+PaperSource = Literal["semantic_scholar", "openalex", "crossref"]
 
 
 class PaperHit(BaseModel):

@@ -7,7 +7,7 @@ from urllib.parse import quote, urlparse
 
 from ...config import Settings, get_settings
 from ...models.papers import PaperHit
-from .search import JsonGetter, OPENALEX_WORKS, default_get_json
+from .search import JsonGetter, OPENALEX_WORKS, default_get_json, openalex_headers
 
 logger = logging.getLogger(__name__)
 
@@ -126,8 +126,12 @@ def openalex_pdf_urls_by_doi(
     try:
         payload = get_json(
             OPENALEX_WORKS,
-            params={"filter": f"doi:{doi}", "per_page": 1},
-            headers={"User-Agent": "Enhanced-Self-RAG/1.0"},
+            params={
+                "filter": f"doi:{doi}",
+                "per_page": 1,
+                "mailto": settings.unpaywall_email or "selfrag@localhost",
+            },
+            headers=openalex_headers(settings),
             timeout=settings.paper_search_timeout_s,
         )
     except Exception as exc:

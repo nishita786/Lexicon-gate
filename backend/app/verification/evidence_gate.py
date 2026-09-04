@@ -547,6 +547,21 @@ class EvidenceGate:
         )
 
 
+def decision_is_unrelated(decision: EvidenceGateDecision | None) -> bool:
+    """True when the gate abstained because the question is not about the corpus."""
+
+    if decision is None or decision.action != "abstain":
+        return False
+    rationale = (decision.rationale or "").lower()
+    if "absent from the corpus" in rationale or "never co-occur" in rationale:
+        return True
+    if decision.max_relevance < 0.3:
+        return True
+    if decision.uncovered_terms and decision.evidence_score < 0.35:
+        return True
+    return False
+
+
 def _source_quality_for(item: EvidenceItem) -> float:
     """Resolve a source-quality prior for a retrieved passage.
 

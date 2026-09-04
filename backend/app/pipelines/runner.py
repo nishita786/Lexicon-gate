@@ -19,6 +19,7 @@ from ..generation.prompts import (
     CONFLICT_PREFIX,
     GROUNDED_SYSTEM,
     INSUFFICIENT_ANSWER,
+    UNRELATED_ANSWER,
     answer_prompt,
     conflict_prompt,
     format_evidence,
@@ -44,7 +45,7 @@ from ..verification.claim_extraction import extract_claims
 from ..verification.claim_verifier import ClaimVerifier
 from ..verification.confidence import score_confidence
 from ..verification.contradiction import detect_contradictions
-from ..verification.evidence_gate import EvidenceGate
+from ..verification.evidence_gate import EvidenceGate, decision_is_unrelated
 from ..verification.hallucination import detect_hallucinations
 from .common import (
     TraceRecorder,
@@ -284,8 +285,10 @@ class PipelineRunner:
 
         if self.kb.is_empty():
             return self._finalise(
-                query_id, query, INSUFFICIENT_ANSWER, AnswerStatus.insufficient_evidence,
+                query_id, query, UNRELATED_ANSWER, AnswerStatus.insufficient_evidence,
                 [], [], [], [], trace, usage, t0, analysis, [],
+                unrelated_to_sources=True,
+                mismatch_detail="The library is empty, so nothing can support this question.",
             )
 
         current_k = self.controller.initial_top_k(analysis, override=top_k)
@@ -391,15 +394,21 @@ class PipelineRunner:
                 break
 
         if cfg.evidence_gate and last_action == "abstain":
+            last_decision = decisions[-1] if decisions else None
+            unrelated = decision_is_unrelated(last_decision)
+            refuse = UNRELATED_ANSWER if unrelated else INSUFFICIENT_ANSWER
+            mismatch = self._mismatch_detail(query, evidence, last_decision) if unrelated else None
             trace.add(
                 "abstain",
-                "Insufficient evidence — refusing to answer",
+                "Question does not match the indexed files" if unrelated else "Insufficient evidence — refusing to answer",
                 status="warn",
-                detail=INSUFFICIENT_ANSWER,
+                detail=refuse,
             )
             return self._finalise(
-                query_id, query, INSUFFICIENT_ANSWER, AnswerStatus.insufficient_evidence,
+                query_id, query, refuse, AnswerStatus.insufficient_evidence,
                 evidence, decisions, [], [], trace, usage, t0, analysis, rewritten,
+                unrelated_to_sources=unrelated,
+                mismatch_detail=mismatch,
             )
 
         contradictions: list[ContradictionPair] = []
@@ -513,22 +522,14 @@ class PipelineRunner:
         claims: list[Claim],
         trace: TraceRecorder,
     ) -> tuple[str, AnswerStatus, list[Claim]]:
-        good = [
-            claim
-            for claim in claims
-            if claim.status in (ClaimStatus.supported, ClaimStatus.partially_supported)
-        ]
-        bad = [
-            claim
-            for claim in claims
-            if claim.status in (ClaimStatus.unsupported, ClaimStatus.contradicted)
-        ]
+        good = [claim for claim in claims if claim.status is ClaimStatus.supported]
+        bad = [claim for claim in claims if claim.status is not ClaimStatus.supported]
         if not bad:
             return answer, status, claims
         if not good:
             trace.add(
                 "abstain",
-                "Post-correction evidence still insufficient",
+                "No claim was fully supported by the sources",
                 status="warn",
             )
             return INSUFFICIENT_ANSWER, AnswerStatus.insufficient_evidence, claims
@@ -682,6 +683,26 @@ class PipelineRunner:
         usage.add_llm(response.prompt_tokens, response.completion_tokens)
         return response
 
+    def _mismatch_detail(
+        self,
+        query: str,
+        evidence: list[EvidenceItem],
+        decision: EvidenceGateDecision | None,
+    ) -> str:
+        docs = []
+        try:
+            docs = self.kb.store.list_documents()
+        except Exception:
+            docs = []
+        titles = [doc.title or doc.name for doc in docs[:8] if (doc.title or doc.name)]
+        if not titles:
+            titles = list(dict.fromkeys(item.document_name for item in evidence if item.document_name))[:8]
+        covered = ", ".join(titles) if titles else "the indexed files"
+        rationale = (decision.rationale if decision else "") or ""
+        return (
+            f"Asked: {query.strip()}. Indexed sources cover: {covered}. {rationale}"
+        ).strip()
+
     # -------------------------------------------------------------- wrap-up
     def _finalise(
         self,
@@ -698,34 +719,69 @@ class PipelineRunner:
         t0: float,
         analysis: QueryAnalysis,
         rewritten: list[str],
+        unrelated_to_sources: bool = False,
+        mismatch_detail: str | None = None,
     ) -> PipelineResult:
         last_gate = decisions[-1] if decisions else None
         hallucination = detect_hallucinations(answer, claims, evidence)
         if self.config.hallucination_detection:
+            blocked = (
+                status is AnswerStatus.answered
+                and hallucination.hallucination_detected
+                and hallucination.severity in {"medium", "high"}
+                and not (
+                    claims
+                    and all(c.status is ClaimStatus.supported for c in claims)
+                    and hallucination.severity != "high"
+                )
+            )
             trace.add(
                 "hallucination",
                 "Hallucination check "
-                + ("flagged" if hallucination.hallucination_detected else "clear"),
+                + ("blocked" if blocked else "flagged" if hallucination.hallucination_detected else "clear"),
                 status="warn" if hallucination.hallucination_detected else "ok",
                 detail="; ".join(hallucination.flags) or None,
                 metrics={"severity": hallucination.severity},
             )
+            if blocked:
+                answer = INSUFFICIENT_ANSWER
+                status = AnswerStatus.insufficient_evidence
+                trace.add(
+                    "abstain",
+                    "Hallucination check blocked an ungrounded answer",
+                    status="warn",
+                )
         confidence = score_confidence(
             evidence, claims, last_gate, contradictions, self.settings
         )
-        trace.add(
-            "confidence",
-            f"Confidence {confidence.confidence:.0%} "
-            f"({confidence.claims_verified}/{confidence.claims_total} claims verified)",
-            metrics={
-                "confidence": confidence.confidence,
-                "coverage": confidence.evidence_coverage,
-            },
-        )
+        if (
+            status is AnswerStatus.answered
+            and confidence.confidence < self.settings.abstain_confidence_threshold
+        ):
+            answer = INSUFFICIENT_ANSWER
+            status = AnswerStatus.insufficient_evidence
+            trace.add(
+                "abstain",
+                "Confidence below the refuse threshold",
+                status="warn",
+                detail=f"{confidence.confidence:.0%} < {self.settings.abstain_confidence_threshold:.0%}",
+            )
+        else:
+            trace.add(
+                "confidence",
+                f"Confidence {confidence.confidence:.0%} "
+                f"({confidence.claims_verified}/{confidence.claims_total} claims verified)",
+                metrics={
+                    "confidence": confidence.confidence,
+                    "coverage": confidence.evidence_coverage,
+                },
+            )
         if status is AnswerStatus.answered:
             trace.add("final", "Final answer approved")
         elif status is AnswerStatus.conflicting_evidence:
             trace.add("final", "Final answer reports a source conflict", status="warn")
+        elif unrelated_to_sources:
+            trace.add("final", "Question does not match the indexed files", status="warn")
         else:
             trace.add("final", f"Final status: {status.value}", status="warn")
 
@@ -751,4 +807,6 @@ class PipelineRunner:
                 "llm": self.llm.describe(),
                 "retriever": self.retriever.describe(),
             },
+            unrelated_to_sources=unrelated_to_sources,
+            mismatch_detail=mismatch_detail,
         )

@@ -85,6 +85,11 @@ INSUFFICIENT_ANSWER = (
     "I could not find sufficient evidence in the available sources to answer this reliably."
 )
 
+UNRELATED_ANSWER = (
+    "This question is not related to the indexed files. "
+    "The sources do not address it, so no answer is given."
+)
+
 CONFLICT_PREFIX = (
     "The retrieved sources provide conflicting information."
 )

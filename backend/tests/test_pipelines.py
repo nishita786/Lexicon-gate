@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from app.generation.prompts import INSUFFICIENT_ANSWER
+from app.generation.prompts import INSUFFICIENT_ANSWER, UNRELATED_ANSWER
 from app.models.query import AnswerStatus, Claim, ClaimStatus, PipelineName
-from app.pipelines.common import drop_unsupported_sentences
+from app.pipelines.common import TraceRecorder, drop_unsupported_sentences
 from app.pipelines.runner import PipelineRunner, enhanced_config, self_rag_config, traditional_config
 
 
@@ -22,8 +22,10 @@ def test_enhanced_abstains_when_evidence_is_missing(demo_kb, llm):
     runner = PipelineRunner(demo_kb, llm, enhanced_config())
     result = runner.run("How does dropout affect Titan's nitrogen atmosphere?")
     assert result.abstained is True
-    assert INSUFFICIENT_ANSWER in result.answer
     assert result.status is AnswerStatus.insufficient_evidence
+    assert result.unrelated_to_sources is True
+    assert UNRELATED_ANSWER in result.answer or INSUFFICIENT_ANSWER in result.answer
+    assert result.mismatch_detail
 
 
 def test_enhanced_answers_supported_question_with_citations(demo_kb, llm):
@@ -35,6 +37,9 @@ def test_enhanced_answers_supported_question_with_citations(demo_kb, llm):
     assert "[" in result.answer
     assert result.confidence.confidence > 0.4
     assert result.trace
+    assert result.unrelated_to_sources is False
+    assert result.claims
+    assert any(claim.status is ClaimStatus.supported for claim in result.claims)
 
 
 def test_enhanced_detects_dropout_conflict(demo_kb, llm):
@@ -83,7 +88,23 @@ def test_enhanced_answered_has_no_red_claims(demo_kb, llm):
     runner = PipelineRunner(demo_kb, llm, enhanced_config())
     result = runner.run("What is the main advantage of dropout?")
     if result.status is AnswerStatus.answered:
-        assert all(
-            claim.status not in (ClaimStatus.unsupported, ClaimStatus.contradicted)
-            for claim in result.claims
-        )
+        assert all(claim.status is ClaimStatus.supported for claim in result.claims)
+
+
+def test_partial_claims_do_not_produce_answered(demo_kb, llm):
+    runner = PipelineRunner(demo_kb, llm, enhanced_config())
+    answer, status, claims = runner._enforce_supported_answer(
+        "Dropout might reduce overfitting in some settings.",
+        AnswerStatus.answered,
+        [
+            Claim(
+                claim_id="c1",
+                text="Dropout might reduce overfitting in some settings.",
+                status=ClaimStatus.partially_supported,
+            )
+        ],
+        TraceRecorder(),
+    )
+    assert status is AnswerStatus.insufficient_evidence
+    assert INSUFFICIENT_ANSWER in answer
+    assert claims
