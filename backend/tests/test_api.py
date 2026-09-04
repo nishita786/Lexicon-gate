@@ -1,0 +1,112 @@
+"""API endpoint tests via FastAPI's TestClient."""
+
+from __future__ import annotations
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.config import get_settings
+from app.main import create_app
+from app.services.embeddings.registry import reset_embedding_cache
+from app.services.llm.registry import reset_llm_cache
+from app.services.store.knowledge_base import reset_knowledge_base
+from app.services.vectorstore.registry import reset_vector_store_cache
+
+
+@pytest.fixture
+def client(settings, monkeypatch):
+    reset_knowledge_base()
+    reset_llm_cache()
+    reset_embedding_cache()
+    reset_vector_store_cache()
+    get_settings.cache_clear()
+    monkeypatch.setenv("SELFRAG_DATA_DIR", str(settings.data_dir))
+    monkeypatch.setenv("SELFRAG_LLM_PROVIDER", "extractive")
+    monkeypatch.setenv("SELFRAG_EMBEDDING_PROVIDER", "lsa")
+    monkeypatch.setenv("SELFRAG_VECTOR_STORE", "numpy")
+    # Recreate settings cache so the app sees the temp dirs.
+    from app import config as config_mod
+
+    config_mod.settings = settings
+    app = create_app()
+    with TestClient(app) as test_client:
+        yield test_client
+    reset_knowledge_base()
+    get_settings.cache_clear()
+
+
+def test_health(client: TestClient):
+    response = client.get("/api/health")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["knowledge_base"]["chunks"] == 0
+
+
+def test_list_documents(client: TestClient):
+    response = client.get("/api/documents")
+    assert response.status_code == 200
+    assert response.json()["total_documents"] == 0
+
+
+def test_upload_and_query(client: TestClient):
+    upload = client.post(
+        "/api/documents/upload",
+        files=[
+            (
+                "files",
+                (
+                    "notes.md",
+                    b"# Notes\n\nThe main advantage of dropout is that it reduces overfitting.\n",
+                    "text/markdown",
+                ),
+            )
+        ],
+    )
+    assert upload.status_code == 200
+    assert upload.json()["total_chunks"] >= 1
+
+    queried = client.post(
+        "/api/query",
+        json={"query": "What is the main advantage of dropout?", "pipeline": "traditional_rag"},
+    )
+    assert queried.status_code == 200
+    body = queried.json()
+    assert body["answer"]
+    assert body["query_id"]
+    assert body["pipeline"] == "enhanced_self_rag"
+    saved = client.get(f"/api/query/history/{body['query_id']}")
+    assert saved.status_code == 200
+    assert saved.json()["query_id"] == body["query_id"]
+    trace = client.get(f"/api/query/{body['query_id']}/trace")
+    assert trace.status_code == 200
+    assert trace.json()["trace"]
+
+
+def test_compare_endpoint(client: TestClient):
+    seeded = client.post("/api/documents/demo")
+    assert seeded.status_code == 200
+    response = client.post(
+        "/api/query/compare",
+        json={"query": "What is the main advantage of dropout?"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["rows"]) == 3
+    assert body["winner"]
+
+
+def test_evaluate_small(client: TestClient):
+    response = client.post(
+        "/api/evaluate",
+        json={
+            "pipelines": ["traditional_rag", "enhanced_self_rag"],
+            "include_ablation": False,
+            "limit": 4,
+            "persist": False,
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["n_questions"] == 4
+    assert len(body["systems"]) == 2

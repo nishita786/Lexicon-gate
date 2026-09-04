@@ -1,0 +1,372 @@
+"""HTTP API."""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Any
+
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+
+from ..config import get_settings
+from ..evaluation.dataset import benchmark_dataset, load_demo_corpus
+from ..evaluation.harness import (
+    EvaluationHarness,
+    comparison_table,
+    list_runs,
+    load_latest_run,
+    summarise,
+)
+from ..models.documents import DocumentListResponse, UploadResponse
+from ..models.evaluation import EvaluateRequest, EvaluationRun
+from ..models.query import (
+    CompareRequest,
+    CompareResponse,
+    ComparisonRow,
+    PipelineName,
+    PipelineResult,
+    QueryRequest,
+)
+from ..pipelines.runner import (
+    PipelineRunner,
+    enhanced_config,
+    self_rag_config,
+    traditional_config,
+)
+from ..services.embeddings.registry import available_embedding_providers, get_embedding_provider
+from ..services.llm.registry import available_llm_providers, get_llm_provider
+from ..services.store.history import history
+from ..services.store.knowledge_base import get_knowledge_base
+from ..services.vectorstore.registry import available_vector_stores
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+_CONFIGS = {
+    PipelineName.traditional: traditional_config,
+    PipelineName.self_rag: self_rag_config,
+    PipelineName.enhanced: enhanced_config,
+}
+
+
+def _runner(pipeline: PipelineName, threshold: float | None = None) -> PipelineRunner:
+    return PipelineRunner(
+        kb=get_knowledge_base(),
+        llm=get_llm_provider(),
+        config=_CONFIGS[pipeline](),
+        evidence_threshold=threshold,
+    )
+
+
+def _to_row(result: PipelineResult) -> ComparisonRow:
+    n_claims = result.confidence.claims_total
+    n_verified = result.confidence.claims_verified
+    last_gate = result.gate_decisions[-1].evidence_score if result.gate_decisions else 0.0
+    unsupported_rate = (
+        result.confidence.unsupported_claims / n_claims if n_claims else 0.0
+    )
+    return ComparisonRow(
+        pipeline=result.pipeline,
+        pipeline_label=result.pipeline_label,
+        answer=result.answer,
+        status=result.status,
+        abstained=result.abstained,
+        confidence=result.confidence.confidence,
+        evidence_score=last_gate,
+        evidence_coverage=result.confidence.evidence_coverage,
+        claims_verified=n_verified,
+        claims_total=n_claims,
+        claim_support_rate=(n_verified / n_claims) if n_claims else 0.0,
+        unsupported_claim_rate=unsupported_rate,
+        hallucination_detected=result.hallucination.hallucination_detected,
+        hallucination_flags=result.hallucination.flags,
+        contradictions_found=len(result.contradictions),
+        n_sources=len(result.evidence),
+        citations=[item.citation_label for item in result.evidence],
+        retrieval_attempts=result.metrics.retrieval_attempts,
+        correction_loops=result.metrics.correction_loops,
+        latency_ms=result.metrics.latency_ms,
+    )
+
+
+def _pick_winner(rows: list[ComparisonRow]) -> tuple[str, str]:
+    """Pick a winner from observable quality signals, not a hard-coded ranking."""
+
+    def score(row: ComparisonRow) -> float:
+        hall = 1.0 if row.hallucination_detected else 0.0
+        return (
+            0.35 * row.claim_support_rate
+            + 0.25 * row.confidence
+            + 0.20 * row.evidence_score
+            + 0.20 * (1.0 - hall)
+            - (0.15 if row.abstained and row.evidence_score >= 0.55 else 0.0)
+        )
+
+    ranked = sorted(rows, key=score, reverse=True)
+    winner = ranked[0]
+    reason = (
+        f"{winner.pipeline_label} ranked highest on combined claim support "
+        f"({winner.claim_support_rate:.0%}), evidence score ({winner.evidence_score:.2f}) "
+        f"and confidence ({winner.confidence:.0%})."
+    )
+    return winner.pipeline.value, reason
+
+
+# --------------------------------------------------------------------------- health
+@router.get("/health", tags=["system"])
+def health() -> dict[str, Any]:
+    settings = get_settings()
+    kb = get_knowledge_base()
+    return {
+        "status": "ok",
+        "app": settings.app_name,
+        "llm": get_llm_provider().describe(),
+        "embeddings": get_embedding_provider().describe(),
+        "vector_store": kb.vectors.name,
+        "knowledge_base": kb.stats(),
+        "available_llm_providers": available_llm_providers(),
+        "available_embedding_providers": available_embedding_providers(),
+        "available_vector_stores": available_vector_stores(),
+    }
+
+
+@router.get("/config", tags=["system"])
+def public_config() -> dict[str, Any]:
+    settings = get_settings()
+    return {
+        "evidence_threshold": settings.evidence_threshold,
+        "initial_top_k": settings.initial_top_k,
+        "max_top_k": settings.max_top_k,
+        "max_retrieval_attempts": settings.max_retrieval_attempts,
+        "max_correction_loops": settings.max_correction_loops,
+        "llm_provider": get_llm_provider().describe(),
+        "embedding_provider": get_embedding_provider().describe(),
+    }
+
+
+# ----------------------------------------------------------------------- documents
+@router.post("/documents/upload", response_model=UploadResponse, tags=["documents"])
+async def upload_documents(files: list[UploadFile] = File(...)) -> UploadResponse:
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded.")
+    kb = get_knowledge_base()
+    documents = []
+    warnings: list[str] = []
+    total_chunks = 0
+    for upload in files:
+        data = await upload.read()
+        name = Path(upload.filename or "untitled.txt").name
+        if not name or name in {".", ".."}:
+            name = "untitled.txt"
+        if not data:
+            warnings.append(f"{name}: empty file skipped")
+            continue
+        try:
+            document, chunks = kb.ingest_bytes(name, data, source="upload", rebuild=False)
+        except Exception as exc:
+            logger.exception("Failed to ingest %s", name)
+            warnings.append(f"{name}: {exc}")
+            continue
+        documents.append(document)
+        total_chunks += len(chunks)
+    if documents:
+        kb.rebuild_indexes()
+    if not documents:
+        raise HTTPException(status_code=400, detail={"message": "No files ingested", "warnings": warnings})
+    return UploadResponse(documents=documents, total_chunks=total_chunks, warnings=warnings)
+
+
+@router.get("/documents", response_model=DocumentListResponse, tags=["documents"])
+def list_documents() -> DocumentListResponse:
+    kb = get_knowledge_base()
+    docs = kb.store.list_documents()
+    return DocumentListResponse(
+        documents=docs,
+        total_documents=len(docs),
+        total_chunks=kb.store.chunk_count(),
+        embedding_provider=kb.embedder.name,
+        vector_store=kb.vectors.name,
+    )
+
+
+@router.delete("/documents/{document_id}", tags=["documents"])
+def delete_document(document_id: str) -> dict[str, Any]:
+    kb = get_knowledge_base()
+    if not kb.delete_document(document_id):
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"deleted": document_id}
+
+
+@router.post("/documents/demo", tags=["documents"])
+def reload_demo_corpus() -> dict[str, Any]:
+    kb = get_knowledge_base()
+    stats = load_demo_corpus(kb, reset=True)
+    return {"status": "ok", **stats}
+
+
+# --------------------------------------------------------------------------- query
+@router.post("/query", response_model=PipelineResult, tags=["query"])
+def query(request: QueryRequest) -> PipelineResult:
+    runner = _runner(PipelineName.enhanced, threshold=request.evidence_threshold)
+    result = runner.run(
+        request.query,
+        top_k=request.top_k,
+        document_ids=request.document_ids,
+    )
+    history.add(result)
+    if not request.include_trace:
+        result.trace = []
+    return result
+
+
+@router.post("/query/compare", response_model=CompareResponse, tags=["query"])
+def compare(request: CompareRequest) -> CompareResponse:
+    results: dict[str, PipelineResult] = {}
+    rows: list[ComparisonRow] = []
+    query_id = ""
+    for pipeline in request.pipelines:
+        result = _runner(pipeline).run(
+            request.query,
+            top_k=request.top_k,
+            document_ids=request.document_ids,
+        )
+        history.add(result)
+        results[pipeline.value] = result
+        rows.append(_to_row(result))
+        query_id = result.query_id
+    winner, reason = _pick_winner(rows)
+    return CompareResponse(
+        query_id=query_id,
+        query=request.query,
+        rows=rows,
+        results=results,
+        winner=winner,
+        winner_reason=reason,
+    )
+
+
+@router.get("/query/{query_id}/trace", tags=["query"])
+def get_trace(query_id: str) -> dict[str, Any]:
+    result = history.get(query_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Query id not found in recent history")
+    return {
+        "query_id": result.query_id,
+        "pipeline": result.pipeline,
+        "query": result.query,
+        "trace": [event.model_dump() for event in result.trace],
+        "metrics": result.metrics.model_dump(),
+        "confidence": result.confidence.model_dump(),
+    }
+
+
+@router.get("/query/recent", tags=["query"])
+def recent_queries(limit: int = Query(default=12, ge=1, le=50)) -> list[dict[str, Any]]:
+    out = []
+    for result in history.recent(limit):
+        out.append(
+            {
+                "query_id": result.query_id,
+                "pipeline": result.pipeline,
+                "pipeline_label": result.pipeline_label,
+                "query": result.query,
+                "status": result.status,
+                "confidence": result.confidence.confidence,
+                "latency_ms": result.metrics.latency_ms,
+            }
+        )
+    return out
+
+
+@router.get("/query/history/{query_id}", response_model=PipelineResult, tags=["query"])
+def get_history_item(query_id: str) -> PipelineResult:
+    result = history.get(query_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Query id not found in recent history")
+    return result
+
+
+# ----------------------------------------------------------------------- evaluation
+@router.post("/evaluate", response_model=EvaluationRun, tags=["evaluation"])
+def evaluate(request: EvaluateRequest) -> EvaluationRun:
+    harness = EvaluationHarness(get_knowledge_base(), get_llm_provider())
+    return harness.run(
+        pipelines=request.pipelines,
+        include_ablation=request.include_ablation,
+        limit=request.limit,
+        categories=request.categories,
+        k=request.k,
+        persist=request.persist,
+    )
+
+
+@router.get("/evaluation/results", tags=["evaluation"])
+def evaluation_results() -> dict[str, Any]:
+    run = load_latest_run()
+    if run is None:
+        return {"run": None, "summary": None, "table": [], "message": "No evaluation has been run yet."}
+    return {
+        "run": run.model_dump(mode="json"),
+        "summary": summarise(run).model_dump(mode="json"),
+        "table": comparison_table(run),
+    }
+
+
+@router.get("/evaluation/runs", tags=["evaluation"])
+def evaluation_runs() -> list[dict[str, Any]]:
+    return [item.model_dump(mode="json") for item in list_runs()]
+
+
+@router.get("/evaluation/benchmark", tags=["evaluation"])
+def get_benchmark() -> dict[str, Any]:
+    dataset = benchmark_dataset()
+    return {
+        "name": dataset.name,
+        "description": dataset.description,
+        "n_questions": len(dataset.questions),
+        "questions": [q.model_dump(mode="json") for q in dataset.questions],
+    }
+
+
+@router.get("/evaluation/demo-cases", tags=["evaluation"])
+def demo_cases() -> list[dict[str, str]]:
+    """Curated questions that demonstrate each architectural behaviour."""
+
+    return [
+        {
+            "id": "normal",
+            "title": "Normal factual question",
+            "query": "What is the main advantage of dropout?",
+            "expect": "Answered with citations from the handbook.",
+        },
+        {
+            "id": "multi_document",
+            "title": "Multi-document question",
+            "query": "How does hybrid retrieval using RRF relate to the remaining gaps in standard Self-RAG?",
+            "expect": "Evidence combined from the survey and the hybrid-retrieval notes.",
+        },
+        {
+            "id": "rewrite",
+            "title": "Rare identifier (may trigger rewrite)",
+            "query": "What k does RRF-7F3 use?",
+            "expect": "Hybrid retrieval / rewrite recovers the lexical identifier; k = 60.",
+        },
+        {
+            "id": "refuse",
+            "title": "No supporting evidence",
+            "query": "How does dropout affect Titan's nitrogen atmosphere?",
+            "expect": "Enhanced Self-RAG refuses; Traditional RAG may hallucinate a fluent mix.",
+        },
+        {
+            "id": "conflict",
+            "title": "Contradictory sources",
+            "query": "Does dropout reduce overfitting?",
+            "expect": "Conflict between the handbook and the internal memo is reported, not collapsed.",
+        },
+        {
+            "id": "architecture",
+            "title": "Proposed-architecture advantage",
+            "query": "What is the main advantage of the proposed architecture?",
+            "expect": "Answers only when evidence is sufficient; claim-level verification.",
+        },
+    ]
