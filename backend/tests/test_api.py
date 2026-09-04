@@ -75,6 +75,11 @@ def test_upload_and_query(client: TestClient):
     assert body["answer"]
     assert body["query_id"]
     assert body["pipeline"] == "enhanced_self_rag"
+    if body.get("evidence"):
+        cite = body["evidence"][0]
+        assert "apa" in cite
+        assert "bibtex" in cite
+        assert "title" in cite
     saved = client.get(f"/api/query/history/{body['query_id']}")
     assert saved.status_code == 200
     assert saved.json()["query_id"] == body["query_id"]
@@ -110,3 +115,91 @@ def test_evaluate_small(client: TestClient):
     body = response.json()
     assert body["n_questions"] == 4
     assert len(body["systems"]) == 2
+
+
+def test_patch_document_endpoint(client: TestClient):
+    upload = client.post(
+        "/api/documents/upload",
+        files=[("files", ("notes.md", b"# Notes\n\nDropout reduces overfitting.\n", "text/markdown"))],
+    )
+    assert upload.status_code == 200
+    doc_id = upload.json()["documents"][0]["document_id"]
+    patched = client.patch(
+        f"/api/documents/{doc_id}",
+        json={"title": "Dropout notes", "authors": ["A. Researcher"], "year": 2022},
+    )
+    assert patched.status_code == 200
+    body = patched.json()
+    assert body["title"] == "Dropout notes"
+    assert body["authors"] == ["A. Researcher"]
+    assert body["year"] == 2022
+
+
+def test_papers_search_requires_query(client: TestClient):
+    response = client.get("/api/papers/search?q=")
+    assert response.status_code == 400
+
+
+def test_papers_search_endpoint(client: TestClient, monkeypatch):
+    from app.models.papers import PaperHit
+
+    def fake_search(query, limit=10, **kwargs):
+        return (
+            [
+                PaperHit(
+                    paper_id="abc",
+                    title="Dropout",
+                    authors=["N. Srivastava"],
+                    year=2014,
+                    source="semantic_scholar",
+                )
+            ],
+            "semantic_scholar",
+        )
+
+    monkeypatch.setattr("app.api.routes.search_papers", fake_search)
+    response = client.get("/api/papers/search", params={"q": "dropout"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"] == "semantic_scholar"
+    assert body["papers"][0]["title"] == "Dropout"
+
+
+def test_papers_import_endpoint(client: TestClient, monkeypatch):
+    from app.models.documents import Document
+
+    def fake_import(request, kb, **kwargs):
+        doc = Document(
+            document_id="doc-1",
+            name="dropout.md",
+            title=request.title or "Dropout",
+            authors=request.authors or [],
+            year=request.year,
+        )
+        from app.services.papers.import_paper import PaperImportResult
+
+        return PaperImportResult(
+            document=doc,
+            ingested="abstract",
+            warnings=[],
+            paper_url="https://doi.org/10.1/x",
+            pdf_url=None,
+        )
+
+    monkeypatch.setattr("app.api.routes.import_paper", fake_import)
+    response = client.post(
+        "/api/papers/import",
+        json={
+            "paper_id": "abc",
+            "source": "semantic_scholar",
+            "title": "Dropout",
+            "authors": ["N. Srivastava"],
+            "year": 2014,
+            "abstract": "We present dropout.",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ingested"] == "abstract"
+    assert body["document"]["title"] == "Dropout"
+    assert body["paper_url"] == "https://doi.org/10.1/x"

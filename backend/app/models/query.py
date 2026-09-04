@@ -75,12 +75,20 @@ class EvidenceItem(BaseModel):
     evidence_score: float = 0.0
     breakdown: EvidenceScoreBreakdown = Field(default_factory=EvidenceScoreBreakdown)
     supporting_spans: list[str] = Field(default_factory=list)
+    title: str = ""
+    authors: list[str] = Field(default_factory=list)
+    year: int | None = None
+    venue: str | None = None
+    doi: str | None = None
+    apa: str = ""
+    bibtex: str = ""
 
     @property
     def citation_label(self) -> str:
+        heading = self.title or self.document_name
         if self.page is None:
-            return self.document_name
-        return f"{self.document_name} — page {self.page}"
+            return heading
+        return f"{heading} — page {self.page}"
 
 
 class EvidenceGateDecision(BaseModel):

@@ -48,6 +48,19 @@ class Document(BaseModel):
     source_quality: float = 0.6
     tags: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_utcnow)
+    title: str = ""
+    authors: list[str] = Field(default_factory=list)
+    year: int | None = None
+    venue: str | None = None
+    doi: str | None = None
+
+
+class DocumentBiblioUpdate(BaseModel):
+    title: str | None = None
+    authors: list[str] | None = None
+    year: int | None = None
+    venue: str | None = None
+    doi: str | None = None
 
 
 class UploadResponse(BaseModel):

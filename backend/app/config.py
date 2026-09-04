@@ -124,6 +124,12 @@ class Settings(BaseSettings):
     conf_weight_coverage: float = 0.20
     abstain_confidence_threshold: float = 0.35
 
+    # ---------------------------------------------------------- paper search
+    semantic_scholar_api_key: str | None = None
+    paper_search_timeout_s: float = 20.0
+    paper_pdf_max_bytes: int = 15_000_000
+    unpaywall_email: str = "selfrag@localhost"
+
     def ensure_dirs(self) -> None:
         for path in (
             self.data_dir,

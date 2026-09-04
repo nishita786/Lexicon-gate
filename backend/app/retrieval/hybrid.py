@@ -113,6 +113,7 @@ class HybridRetriever:
             chunk = self.kb.get_chunk(chunk_id)
             if chunk is None:
                 continue
+            document = self.kb.store.get_document(chunk.metadata.document_id)
             items.append(
                 EvidenceItem(
                     citation_id=0,
@@ -128,6 +129,11 @@ class HybridRetriever:
                     rank=rank,
                     source_quality=float(chunk.metadata.source_quality),
                     supporting_spans=list(matched_terms.get(chunk_id, [])[:8]),
+                    title=document.title if document else chunk.metadata.document_name,
+                    authors=list(document.authors) if document else [],
+                    year=document.year if document else None,
+                    venue=document.venue if document else None,
+                    doi=document.doi if document else None,
                 )
             )
         return items

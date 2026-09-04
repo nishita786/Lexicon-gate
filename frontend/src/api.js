@@ -24,6 +24,14 @@ export const api = {
     return request("/documents/upload", { method: "POST", body: data });
   },
   deleteDocument: (id) => request(`/documents/${id}`, { method: "DELETE" }),
+  searchPapers: (q, limit = 10) =>
+    request(`/papers/search?q=${encodeURIComponent(q)}&limit=${limit}`),
+  importPaper: (payload) =>
+    request("/papers/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
   query: (payload) =>
     request("/query", {
       method: "POST",

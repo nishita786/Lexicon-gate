@@ -7,7 +7,7 @@ citation provenance survives ingestion.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -27,6 +27,15 @@ class LoadedPage:
 
 class UnsupportedDocumentError(ValueError):
     pass
+
+
+@dataclass(slots=True)
+class Bibliography:
+    title: str = ""
+    authors: list[str] = field(default_factory=list)
+    year: int | None = None
+    venue: str | None = None
+    doi: str | None = None
 
 
 def load_document(path: Path | str) -> list[LoadedPage]:
@@ -140,3 +149,41 @@ def _chunk_paragraphs(text: str) -> list[str]:
     if buffer:
         pages.append("\n\n".join(buffer))
     return pages or [text]
+
+
+def extract_bibliography(name: str, data: bytes | None = None, path: Path | str | None = None) -> Bibliography:
+    """PDF document info when available; otherwise a title from the filename."""
+
+    from ..citations import parse_authors, title_from_filename, year_from_pdf_date
+
+    suffix = Path(name).suffix.lower()
+    biblio = Bibliography(title=title_from_filename(name))
+    if suffix not in PDF_SUFFIXES:
+        return biblio
+    try:
+        from pypdf import PdfReader  # noqa: PLC0415
+
+        if data is not None:
+            import io
+
+            reader = PdfReader(io.BytesIO(data))
+        elif path is not None:
+            reader = PdfReader(str(path))
+        else:
+            return biblio
+        info = reader.metadata
+        if info is None:
+            return biblio
+        title = getattr(info, "title", None)
+        if title and str(title).strip():
+            biblio.title = str(title).strip()
+        authors = parse_authors(getattr(info, "author", None))
+        if authors:
+            biblio.authors = authors
+        biblio.year = year_from_pdf_date(getattr(info, "creation_date", None))
+        subject = getattr(info, "subject", None)
+        if subject and str(subject).strip():
+            biblio.venue = str(subject).strip()
+    except Exception as exc:  # pragma: no cover - malformed PDFs
+        logger.warning("Could not read PDF bibliography from %s: %s", name, exc)
+    return biblio

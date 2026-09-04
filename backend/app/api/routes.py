@@ -17,7 +17,10 @@ from ..evaluation.harness import (
     load_latest_run,
     summarise,
 )
-from ..models.documents import DocumentListResponse, UploadResponse
+from ..models.documents import Document, DocumentBiblioUpdate, DocumentListResponse, UploadResponse
+from ..models.papers import PaperImportRequest, PaperImportResponse, PaperSearchResponse
+from ..services.papers.import_paper import import_paper
+from ..services.papers.search import search_papers
 from ..models.evaluation import EvaluateRequest, EvaluationRun
 from ..models.query import (
     CompareRequest,
@@ -189,6 +192,15 @@ def list_documents() -> DocumentListResponse:
     )
 
 
+@router.patch("/documents/{document_id}", response_model=Document, tags=["documents"])
+def update_document(document_id: str, payload: DocumentBiblioUpdate) -> Document:
+    kb = get_knowledge_base()
+    updated = kb.update_bibliography(document_id, **payload.model_dump(exclude_unset=True))
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return updated
+
+
 @router.delete("/documents/{document_id}", tags=["documents"])
 def delete_document(document_id: str) -> dict[str, Any]:
     kb = get_knowledge_base()
@@ -202,6 +214,38 @@ def reload_demo_corpus() -> dict[str, Any]:
     kb = get_knowledge_base()
     stats = load_demo_corpus(kb, reset=True)
     return {"status": "ok", **stats}
+
+
+# --------------------------------------------------------------------------- papers
+@router.get("/papers/search", response_model=PaperSearchResponse, tags=["papers"])
+def papers_search(
+    q: str = Query(default="", min_length=0),
+    limit: int = Query(default=10, ge=1, le=25),
+) -> PaperSearchResponse:
+    query = q.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Search query is required.")
+    papers, provider = search_papers(query, limit=limit)
+    return PaperSearchResponse(query=query, provider=provider, papers=papers)
+
+
+@router.post("/papers/import", response_model=PaperImportResponse, tags=["papers"])
+def papers_import(request: PaperImportRequest) -> PaperImportResponse:
+    kb = get_knowledge_base()
+    try:
+        result = import_paper(request, kb)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Paper import failed")
+        raise HTTPException(status_code=502, detail=f"Could not import paper: {exc}") from exc
+    return PaperImportResponse(
+        document=result.document.model_dump(mode="json"),
+        ingested=result.ingested,
+        warnings=result.warnings,
+        paper_url=result.paper_url,
+        pdf_url=result.pdf_url,
+    )
 
 
 # --------------------------------------------------------------------------- query

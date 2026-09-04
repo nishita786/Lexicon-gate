@@ -6,9 +6,9 @@ It will refuse when the sources cannot support a reliable answer. It does not fi
 
 ## What you get
 
-1. **Library** — upload PDF, Markdown, or text.
-2. **Ask** — one question, one Enhanced Self-RAG answer.
-3. Every answer includes **citations**, **claim labels** (supported / unsupported / contradicted), and a **confidence** score derived from the evidence.
+1. **Find papers** — search Semantic Scholar (OpenAlex fallback) and add a paper to your library.
+2. **Library** — your sources (imported papers or uploaded files).
+3. **Ask** — one Enhanced Self-RAG answer with citations, claim labels, confidence, and Copy APA / BibTeX.
 
 There is no notebook, no pipeline picker, and no research comparison screen. Evaluation stays in pytest for quality checks.
 

@@ -3,6 +3,7 @@ import { api, ms, pct } from "./api";
 
 const NAV = [
   ["ask", "Ask"],
+  ["find", "Find papers"],
   ["library", "Library"],
 ];
 
@@ -86,6 +87,7 @@ export default function App() {
             onQueried={refresh}
           />
         )}
+        {page === "find" && <FindPapers onImported={refresh} />}
         {page === "library" && (
           <Library docs={docs} onChange={refresh} />
         )}
@@ -128,8 +130,8 @@ function Ask({ docs, result, setResult, selected, setSelected, history, onQuerie
 
       {emptyLibrary && (
         <div className="card banner" style={{ marginBottom: 16 }}>
-          Upload sources first. Open <strong>Library</strong> and add PDF, Markdown, or text files.
-          There is nothing to retrieve from until you do.
+          Upload sources first. Open <strong>Find papers</strong> to search academic indexes,
+          or <strong>Library</strong> to upload your own files.
         </div>
       )}
 
@@ -137,7 +139,7 @@ function Ask({ docs, result, setResult, selected, setSelected, history, onQuerie
         <textarea
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder={emptyLibrary ? "Add documents in Library, then ask a question." : "Ask a question about your sources…"}
+          placeholder={emptyLibrary ? "Find or upload sources first, then ask." : "Ask a question about your sources…"}
           disabled={emptyLibrary}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -176,6 +178,129 @@ function Ask({ docs, result, setResult, selected, setSelected, history, onQuerie
           }
         }}
       />
+    </>
+  );
+}
+
+function paperHref(paper) {
+  if (paper.doi) {
+    const doi = String(paper.doi).replace(/^https?:\/\/doi\.org\//i, "");
+    return `https://doi.org/${doi}`;
+  }
+  return paper.url || paper.pdf_url || "";
+}
+
+function FindPapers({ onImported }) {
+  const [query, setQuery] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [importing, setImporting] = useState(null);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [results, setResults] = useState(null);
+
+  async function search(event) {
+    event?.preventDefault();
+    const text = query.trim();
+    if (!text) return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const payload = await api.searchPapers(text);
+      setResults(payload);
+      if (!payload.papers?.length) setMessage("No papers found. Try a more specific title or author.");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addPaper(paper) {
+    setImporting(paper.paper_id);
+    setError("");
+    setMessage("");
+    try {
+      const result = await api.importPaper({
+        paper_id: paper.paper_id,
+        source: paper.source,
+        title: paper.title,
+        authors: paper.authors,
+        year: paper.year,
+        venue: paper.venue,
+        abstract: paper.abstract,
+        doi: paper.doi,
+        pdf_url: paper.pdf_url,
+        url: paper.url,
+      });
+      await onImported();
+      if (result.ingested === "pdf") {
+        setMessage(`Added “${paper.title}”. Full PDF indexed. Ask over it from Ask.`);
+      } else {
+        setMessage(
+          `Added “${paper.title}”. Could not fetch a PDF (publisher blocked or paywalled). Abstract saved. Use Open paper for the official copy.`
+        );
+      }
+      if (result.warnings?.length) setError(result.warnings.join(" · "));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setImporting(null);
+    }
+  }
+
+  return (
+    <>
+      <div className="page-title">
+        <div>
+          <h2>Find papers</h2>
+          <p>Search Semantic Scholar (OpenAlex if needed). Add a paper to Library, then Ask with evidence.</p>
+        </div>
+      </div>
+      <form className="card" style={{ marginBottom: 16 }} onSubmit={search}>
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Paper title, topic, or author…"
+        />
+        <div className="row" style={{ marginTop: 10 }}>
+          <button className="primary" type="submit" disabled={busy || !query.trim()}>
+            {busy ? "Searching…" : "Search"}
+          </button>
+          {results?.provider && <span className="status">Results from {results.provider.replaceAll("_", " ")}</span>}
+        </div>
+      </form>
+      {error && <p className="error">{error}</p>}
+      {message && <p className="status">{message}</p>}
+      {(results?.papers || []).map((paper) => (
+        <div key={`${paper.source}-${paper.paper_id}`} className="card paper-row">
+          <div>
+            <strong>{paper.title}</strong>
+            <div className="status" style={{ margin: "4px 0 0" }}>
+              {(paper.authors || []).slice(0, 8).join(", ") || "Unknown author"}
+              {paper.year ? ` · ${paper.year}` : ""}
+              {paper.venue ? ` · ${paper.venue}` : ""}
+              {paper.citation_count != null ? ` · cited ${paper.citation_count}` : ""}
+            </div>
+            {paper.open_access && <span className="flag good" style={{ marginTop: 8 }}>Open access</span>}
+            {paper.abstract && <p className="cite-snippet">{paper.abstract.slice(0, 360)}{paper.abstract.length > 360 ? "…" : ""}</p>}
+          </div>
+          <div className="paper-actions">
+            {paperHref(paper) && (
+              <a className="ghost" href={paperHref(paper)} target="_blank" rel="noreferrer">
+                Open paper
+              </a>
+            )}
+            <button
+              className="primary"
+              disabled={importing === paper.paper_id}
+              onClick={() => addPaper(paper)}
+            >
+              {importing === paper.paper_id ? "Adding…" : "Add to library"}
+            </button>
+          </div>
+        </div>
+      ))}
     </>
   );
 }
@@ -223,7 +348,7 @@ function Library({ docs, onChange }) {
       <div className="page-title">
         <div>
           <h2>Library</h2>
-          <p>These files are the only sources answers can use. Nothing is invented from outside them.</p>
+          <p>Sources Ask can use. Add papers from Find papers, or upload files here. Citation metadata comes from the paper record or the file name.</p>
         </div>
         <label className="primary upload-btn">
           {busy ? "Indexing…" : "Upload files"}
@@ -236,8 +361,7 @@ function Library({ docs, onChange }) {
         <div className="card">
           <h3>No sources yet</h3>
           <p className="status">
-            Upload the documents you want answers from. Supported types depend on the backend
-            loaders (typically PDF, Markdown, and plain text).
+            Upload a PDF or text file, or search academic papers in <strong>Find papers</strong>.
           </p>
         </div>
       )}
@@ -246,18 +370,27 @@ function Library({ docs, onChange }) {
           <table>
             <thead>
               <tr>
-                <th>File</th>
+                <th>Citation</th>
                 <th className="num">Passages</th>
-                <th className="num">Pages</th>
                 <th />
               </tr>
             </thead>
             <tbody>
               {docs.map((doc) => (
                 <tr key={doc.document_id}>
-                  <td>{doc.name}</td>
+                  <td>
+                    <div>
+                      <strong>{doc.title || doc.name}</strong>
+                      <div className="status" style={{ margin: 0 }}>
+                        {(doc.authors || []).join(", ") || "Unknown author"}
+                        {doc.year ? ` · ${doc.year}` : ""}
+                        {doc.venue ? ` · ${doc.venue}` : ""}
+                        <br />
+                        {doc.name}
+                      </div>
+                    </div>
+                  </td>
                   <td className="num">{doc.n_chunks}</td>
-                  <td className="num">{doc.n_pages ?? "—"}</td>
                   <td className="num">
                     <button className="danger" disabled={busy} onClick={() => remove(doc.document_id)}>
                       Remove
@@ -336,12 +469,15 @@ function AnswerView({ result, docs, selected, onSelect }) {
                     >
                       <span className={`flag ${CLAIM_TONE[claim.status] || ""}`}>{claim.status.replaceAll("_", " ")}</span>
                       <span>{claim.text}</span>
-                      {claim.supporting_citations?.length > 0 && (
-                        <span className="cite-inline">
-                          {claim.supporting_citations.map((id) => `[${id}]`).join(" ")}
-                        </span>
-                      )}
                     </button>
+                    {claimSources(claim, evidenceByCite).map((item) => (
+                      <CitationCard
+                        key={`${claim.claim_id}-${item.citation_id}`}
+                        item={item}
+                        snippet={claim.best_evidence_span}
+                        onOpen={() => onSelect(item)}
+                      />
+                    ))}
                   </li>
                 ))}
               </ul>
@@ -415,6 +551,57 @@ function AnswerView({ result, docs, selected, onSelect }) {
         </div>
       </div>
     </>
+  );
+}
+
+function claimSources(claim, evidenceByCite) {
+  const ids = [...(claim.supporting_citations || []), ...(claim.contradicting_citations || [])];
+  const unique = [...new Set(ids)];
+  return unique.map((id) => evidenceByCite.get(id)).filter(Boolean);
+}
+
+async function copyText(text) {
+  if (!text) return false;
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function CitationCard({ item, snippet, onOpen }) {
+  const [copied, setCopied] = useState("");
+  const authors = (item.authors || []).join(", ") || "Unknown author";
+  const year = item.year || "n.d.";
+
+  async function copy(kind) {
+    const ok = await copyText(kind === "apa" ? item.apa : item.bibtex);
+    setCopied(ok ? kind : "failed");
+    setTimeout(() => setCopied(""), 1600);
+  }
+
+  return (
+    <div className="cite-card">
+      <button type="button" className="cite-card-main" onClick={onOpen}>
+        <div className="cite-card-title">{item.title || item.document_name}</div>
+        <div className="status" style={{ margin: 0 }}>
+          {authors} · {year}
+          {item.page != null ? ` · p. ${item.page}` : ""}
+          {item.venue ? ` · ${item.venue}` : ""}
+        </div>
+        {snippet && <p className="cite-snippet">{snippet}</p>}
+      </button>
+      <div className="row" style={{ marginTop: 8 }}>
+        <button type="button" className="ghost" onClick={() => copy("apa")}>
+          {copied === "apa" ? "Copied APA" : "Copy APA"}
+        </button>
+        <button type="button" className="ghost" onClick={() => copy("bibtex")}>
+          {copied === "bibtex" ? "Copied BibTeX" : "Copy BibTeX"}
+        </button>
+        {copied === "failed" && <span className="error">Copy failed</span>}
+      </div>
+    </div>
   );
 }
 

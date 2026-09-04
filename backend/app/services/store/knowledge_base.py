@@ -18,7 +18,7 @@ from ...models.documents import Chunk, Document
 from ...retrieval.bm25 import BM25Hit, BM25Index
 from ..embeddings.base import EmbeddingProvider
 from ..embeddings.registry import get_embedding_provider
-from ..ingestion.loaders import LoadedPage, load_bytes, load_document
+from ..ingestion.loaders import LoadedPage, extract_bibliography, load_bytes, load_document
 from ..vectorstore.base import VectorMatch, VectorStore
 from ..vectorstore.registry import get_vector_store
 from .document_store import DocumentStore
@@ -58,9 +58,15 @@ class KnowledgeBase:
         source_quality: float = 0.6,
         tags: Iterable[str] | None = None,
         rebuild: bool = True,
+        title: str | None = None,
+        authors: Iterable[str] | None = None,
+        year: int | None = None,
+        venue: str | None = None,
+        doi: str | None = None,
     ) -> tuple[Document, list[Chunk]]:
         path = Path(path)
         pages = load_document(path)
+        biblio = extract_bibliography(name or path.name, path=path)
         return self.ingest_pages(
             name=name or path.name,
             pages=pages,
@@ -69,6 +75,11 @@ class KnowledgeBase:
             source_quality=source_quality,
             tags=tags,
             rebuild=rebuild,
+            title=title or biblio.title,
+            authors=list(authors) if authors is not None else biblio.authors,
+            year=year if year is not None else biblio.year,
+            venue=venue if venue is not None else biblio.venue,
+            doi=doi if doi is not None else biblio.doi,
         )
 
     def ingest_bytes(
@@ -79,8 +90,14 @@ class KnowledgeBase:
         source_quality: float = 0.6,
         tags: Iterable[str] | None = None,
         rebuild: bool = True,
+        title: str | None = None,
+        authors: Iterable[str] | None = None,
+        year: int | None = None,
+        venue: str | None = None,
+        doi: str | None = None,
     ) -> tuple[Document, list[Chunk]]:
         pages = load_bytes(name, data)
+        biblio = extract_bibliography(name, data=data)
         return self.ingest_pages(
             name=name,
             pages=pages,
@@ -89,6 +106,11 @@ class KnowledgeBase:
             source_quality=source_quality,
             tags=tags,
             rebuild=rebuild,
+            title=title or biblio.title,
+            authors=list(authors) if authors is not None else biblio.authors,
+            year=year if year is not None else biblio.year,
+            venue=venue if venue is not None else biblio.venue,
+            doi=doi if doi is not None else biblio.doi,
         )
 
     def ingest_pages(
@@ -100,6 +122,11 @@ class KnowledgeBase:
         source_quality: float = 0.6,
         tags: Iterable[str] | None = None,
         rebuild: bool = True,
+        title: str | None = None,
+        authors: Iterable[str] | None = None,
+        year: int | None = None,
+        venue: str | None = None,
+        doi: str | None = None,
     ) -> tuple[Document, list[Chunk]]:
         with self._lock:
             document, chunks = self.store.add_document(
@@ -109,6 +136,11 @@ class KnowledgeBase:
                 media_type=media_type,
                 source_quality=source_quality,
                 tags=tags,
+                title=title,
+                authors=authors,
+                year=year,
+                venue=venue,
+                doi=doi,
             )
             if rebuild:
                 self.rebuild_indexes()
@@ -121,6 +153,10 @@ class KnowledgeBase:
                 self.vectors.delete_document(document_id)
                 self.rebuild_indexes()
             return removed
+
+    def update_bibliography(self, document_id: str, **fields: object) -> Document | None:
+        with self._lock:
+            return self.store.update_bibliography(document_id, **fields)
 
     def reset(self) -> None:
         with self._lock:

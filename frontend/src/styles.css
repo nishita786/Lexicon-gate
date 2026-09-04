@@ -291,6 +291,59 @@ td.win { color: var(--green); }
   color: var(--blue);
 }
 
+.cite-card {
+  margin: 8px 0 12px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--bg);
+}
+.cite-card-main {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+.cite-card-title { font-weight: 600; font-size: 14px; }
+.cite-snippet {
+  margin: 8px 0 0;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.45;
+  font-style: italic;
+}
+.paper-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+.paper-row .primary { flex-shrink: 0; }
+.paper-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+  align-items: stretch;
+}
+a.ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 14px;
+  border-radius: 8px;
+  text-decoration: none;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line);
+  font-size: 13px;
+}
+
 .trace.compact { margin-top: 12px; }
 
 .history-item {
@@ -338,5 +391,6 @@ label.primary {
 @media (max-width: 1100px) {
   .app { grid-template-columns: 1fr; }
   .sidebar { flex-direction: row; flex-wrap: wrap; }
-  .grid.metrics, .grid.two, .grid.three, .compare-cols { grid-template-columns: 1fr; }
+  .grid.metrics, .grid.two, .grid.three, .compare-cols, .paper-row { grid-template-columns: 1fr; }
+  .paper-row { flex-direction: column; }
 }

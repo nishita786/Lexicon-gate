@@ -21,6 +21,7 @@ from ..models.query import (
     TraceEvent,
 )
 from ..text_utils import split_sentences, stem_set
+from ..services.citations import attach_cite_strings
 
 
 PIPELINE_LABELS = {
@@ -93,6 +94,7 @@ def number_citations(evidence: Sequence[EvidenceItem]) -> list[EvidenceItem]:
     for index, item in enumerate(evidence, start=1):
         clone = item.model_copy(deep=True)
         clone.citation_id = index
+        attach_cite_strings(clone)
         numbered.append(clone)
     return numbered
 

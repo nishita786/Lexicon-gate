@@ -17,6 +17,7 @@ from typing import Iterable, Sequence
 
 from ...config import Settings, get_settings
 from ...models.documents import Chunk, ChunkMetadata, Document
+from ..citations import title_from_filename
 from ..ingestion.chunker import chunk_page
 from ..ingestion.cleaner import clean_page, strip_repeated_lines
 from ..ingestion.loaders import LoadedPage
@@ -97,6 +98,11 @@ class DocumentStore:
         source_quality: float = 0.6,
         tags: Iterable[str] | None = None,
         document_id: str | None = None,
+        title: str | None = None,
+        authors: Iterable[str] | None = None,
+        year: int | None = None,
+        venue: str | None = None,
+        doi: str | None = None,
     ) -> tuple[Document, list[Chunk]]:
         """Clean, chunk and register a document. Returns the doc and its chunks."""
 
@@ -153,6 +159,11 @@ class DocumentStore:
                 n_characters=total_chars,
                 source_quality=source_quality,
                 tags=list(tags or []),
+                title=(title or "").strip() or title_from_filename(name),
+                authors=[a.strip() for a in (authors or []) if str(a).strip()],
+                year=year,
+                venue=(venue.strip() if isinstance(venue, str) and venue.strip() else None),
+                doi=(doi.strip() if isinstance(doi, str) and doi.strip() else None),
             )
 
             self._documents[doc_id] = document
@@ -172,6 +183,34 @@ class DocumentStore:
             self._documents.pop(document_id, None)
             self._persist()
             return True
+
+    def update_bibliography(self, document_id: str, **fields: object) -> Document | None:
+        allowed = {"title", "authors", "year", "venue", "doi"}
+        with self._lock:
+            document = self._documents.get(document_id)
+            if document is None:
+                return None
+            payload = {key: value for key, value in fields.items() if key in allowed}
+            if "title" in payload:
+                title = str(payload["title"] or "").strip()
+                payload["title"] = title or document.title or title_from_filename(document.name)
+            if "authors" in payload:
+                raw = payload["authors"] or []
+                payload["authors"] = [str(a).strip() for a in raw if str(a).strip()]
+            if "venue" in payload:
+                venue = str(payload["venue"] or "").strip()
+                payload["venue"] = venue or None
+            if "doi" in payload:
+                doi = str(payload["doi"] or "").strip()
+                payload["doi"] = doi or None
+            if "year" in payload and payload["year"] not in (None, ""):
+                payload["year"] = int(payload["year"])
+            elif "year" in payload:
+                payload["year"] = None
+            updated = document.model_copy(update=payload)
+            self._documents[document_id] = updated
+            self._persist()
+            return updated
 
     def clear(self) -> None:
         with self._lock:
