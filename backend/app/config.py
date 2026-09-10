@@ -117,6 +117,16 @@ class Settings(BaseSettings):
     contradiction_threshold: float = 0.55
     claim_support_rate_target: float = 0.75
 
+    # ------------------------------------------------------- topic clustering
+    cluster_min_similarity: float = 0.42
+    cluster_max_themes: int = 8
+    cluster_sample_chars: int = 4000
+
+    # ---------------------------------------------------------- originality
+    plagiarism_min_ngram: int = 12
+    plagiarism_uncited_ratio: float = 0.20
+    plagiarism_quoted_ratio: float = 0.40
+
     # ------------------------------------------------------------- confidence
     conf_weight_evidence: float = 0.30
     conf_weight_claim_support: float = 0.35

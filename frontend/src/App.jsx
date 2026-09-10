@@ -5,6 +5,7 @@ const NAV = [
   ["ask", "Ask"],
   ["find", "Find papers"],
   ["library", "Library"],
+  ["plagiarism", "Plagiarism"],
 ];
 
 const STATUS_COPY = {
@@ -29,6 +30,7 @@ export default function App() {
   const [lastResult, setLastResult] = useState(null);
   const [selectedEvidence, setSelectedEvidence] = useState(null);
   const [history, setHistory] = useState([]);
+  const [askScope, setAskScope] = useState(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -51,10 +53,10 @@ export default function App() {
 
   return (
     <div className="app">
-      <aside className="sidebar">
+      <header className="topbar">
         <div className="brand">
           <h1>Enhanced Self-RAG</h1>
-          <p>Ask over your files. Answers only when the sources support each claim.</p>
+          <p>Question, evidence, verified answer.</p>
         </div>
         <nav>
           {NAV.map(([id, label]) => (
@@ -63,18 +65,12 @@ export default function App() {
             </button>
           ))}
         </nav>
-        <div className="sidebar-foot">
-          {health ? (
-            <>
-              {docs.length} source{docs.length === 1 ? "" : "s"} indexed
-              <br />
-              {health.knowledge_base?.chunks ?? 0} passages
-            </>
-          ) : (
-            "Connecting to API…"
-          )}
+        <div className="topbar-meta">
+          {health
+            ? `${docs.length} source${docs.length === 1 ? "" : "s"} · ${health.knowledge_base?.chunks ?? 0} passages`
+            : "Connecting to API…"}
         </div>
-      </aside>
+      </header>
       <main className="main">
         {page === "ask" && (
           <Ask
@@ -85,18 +81,28 @@ export default function App() {
             setSelected={setSelectedEvidence}
             history={history}
             onQueried={refresh}
+            askScope={askScope}
+            onClearScope={() => setAskScope(null)}
           />
         )}
         {page === "find" && <FindPapers onImported={refresh} />}
         {page === "library" && (
-          <Library docs={docs} onChange={refresh} />
+          <Library
+            docs={docs}
+            onChange={refresh}
+            onAskTheme={(scope) => {
+              setAskScope(scope);
+              setPage("ask");
+            }}
+          />
         )}
+        {page === "plagiarism" && <PlagiarismCheck docs={docs} />}
       </main>
     </div>
   );
 }
 
-function Ask({ docs, result, setResult, selected, setSelected, history, onQueried }) {
+function Ask({ docs, result, setResult, selected, setSelected, history, onQueried, askScope, onClearScope }) {
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -109,7 +115,11 @@ function Ask({ docs, result, setResult, selected, setSelected, history, onQuerie
     setError("");
     setSelected(null);
     try {
-      const payload = await api.query({ query: text, include_trace: true });
+      const payload = await api.query({
+        query: text,
+        include_trace: true,
+        document_ids: askScope?.document_ids?.length ? askScope.document_ids : undefined,
+      });
       setResult(payload);
       await onQueried();
     } catch (err) {
@@ -119,41 +129,73 @@ function Ask({ docs, result, setResult, selected, setSelected, history, onQuerie
     }
   }
 
+  const badge = result ? verificationBadge(result) : null;
+
   return (
-    <>
-      <div className="page-title">
-        <div>
-          <h2>Ask</h2>
-          <p>Enhanced Self-RAG: retrieve, check evidence, draft, verify claims, then answer or refuse.</p>
+    <div className={`ask-workspace ${result ? "has-result" : ""}`}>
+      <div className="ask-col ask-col-query">
+        {emptyLibrary && (
+          <div className="card banner" style={{ marginBottom: 16 }}>
+            Upload sources first. Open <strong>Find papers</strong> to search academic indexes,
+            or <strong>Library</strong> to upload your own files.
+          </div>
+        )}
+        <div className="card">
+          {askScope?.label && (
+            <div className="theme-chip-row">
+              <span className="theme-chip">
+                Asking in: {askScope.label}
+                <button type="button" className="theme-chip-clear" onClick={onClearScope} aria-label="Clear theme filter">
+                  ×
+                </button>
+              </span>
+            </div>
+          )}
+          <textarea
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={emptyLibrary ? "Find or upload sources first, then ask." : "Ask a question about your sources…"}
+            disabled={emptyLibrary}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                ask();
+              }
+            }}
+          />
+          <div className="row" style={{ marginTop: 10 }}>
+            <button className="primary" disabled={busy || emptyLibrary || !query.trim()} onClick={() => ask()}>
+              {busy ? "Checking sources…" : "Ask"}
+            </button>
+            {error && <span className="error">{error}</span>}
+          </div>
+          {badge && (
+            <div className="verify-block">
+              <span className={`flag ${badge.tone}`}>{badge.label}</span>
+              {result.plagiarism && (
+                <span className={`flag ${plagiarismTone(result.plagiarism.risk)}`}>
+                  Originality {Math.round((result.plagiarism.originality ?? 1) * 100)}% unique
+                </span>
+              )}
+              {result.status === "CONFLICTING_EVIDENCE" && (
+                <p className="status" style={{ margin: "8px 0 0" }}>Sources disagree. Both views are in the answer.</p>
+              )}
+            </div>
+          )}
         </div>
-      </div>
-
-      {emptyLibrary && (
-        <div className="card banner" style={{ marginBottom: 16 }}>
-          Upload sources first. Open <strong>Find papers</strong> to search academic indexes,
-          or <strong>Library</strong> to upload your own files.
-        </div>
-      )}
-
-      <div className="card" style={{ marginBottom: 16 }}>
-        <textarea
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder={emptyLibrary ? "Find or upload sources first, then ask." : "Ask a question about your sources…"}
-          disabled={emptyLibrary}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              ask();
+        <HistoryList
+          items={history}
+          onPick={async (item) => {
+            setQuery(item.query);
+            try {
+              const saved = await api.historyItem(item.query_id);
+              setResult(saved);
+              setSelected(null);
+            } catch {
+              /* still fill the question box */
             }
           }}
         />
-        <div className="row" style={{ marginTop: 10 }}>
-          <button className="primary" disabled={busy || emptyLibrary || !query.trim()} onClick={() => ask()}>
-            {busy ? "Checking sources…" : "Ask"}
-          </button>
-          {error && <span className="error">{error}</span>}
-        </div>
       </div>
 
       {result && (
@@ -164,21 +206,7 @@ function Ask({ docs, result, setResult, selected, setSelected, history, onQuerie
           onSelect={setSelected}
         />
       )}
-
-      <HistoryList
-        items={history}
-        onPick={async (item) => {
-          setQuery(item.query);
-          try {
-            const saved = await api.historyItem(item.query_id);
-            setResult(saved);
-            setSelected(null);
-          } catch {
-            /* still fill the question box */
-          }
-        }}
-      />
-    </>
+    </div>
   );
 }
 
@@ -305,10 +333,30 @@ function FindPapers({ onImported }) {
   );
 }
 
-function Library({ docs, onChange }) {
+function Library({ docs, onChange, onAskTheme }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [clusters, setClusters] = useState([]);
+
+  useEffect(() => {
+    if (!docs.length) {
+      setClusters([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .clusters()
+      .then((payload) => {
+        if (!cancelled) setClusters(payload.clusters || []);
+      })
+      .catch(() => {
+        if (!cancelled) setClusters([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [docs]);
 
   async function onUpload(event) {
     const files = event.target.files;
@@ -365,6 +413,47 @@ function Library({ docs, onChange }) {
           </p>
         </div>
       )}
+      {docs.length > 0 && clusters.length > 0 && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <h3>Themes</h3>
+          <p className="status" style={{ marginTop: 0 }}>
+            Related papers grouped by content. Ask a theme to retrieve only those sources.
+          </p>
+          <div className="theme-grid">
+            {clusters.map((cluster) => {
+              const members = (cluster.document_ids || [])
+                .map((id) => docs.find((doc) => doc.document_id === id))
+                .filter(Boolean);
+              return (
+                <div key={cluster.cluster_id} className="theme-card">
+                  <strong>{cluster.label}</strong>
+                  <div className="status" style={{ margin: "6px 0" }}>
+                    {cluster.size} paper{cluster.size === 1 ? "" : "s"}
+                    {cluster.keywords?.length ? ` · ${cluster.keywords.slice(0, 3).join(" · ")}` : ""}
+                  </div>
+                  <ul className="theme-papers">
+                    {members.map((doc) => (
+                      <li key={doc.document_id}>{doc.title || doc.name}</li>
+                    ))}
+                  </ul>
+                  <button
+                    className="ghost"
+                    type="button"
+                    onClick={() =>
+                      onAskTheme({
+                        label: cluster.label,
+                        document_ids: cluster.document_ids,
+                      })
+                    }
+                  >
+                    Ask this theme
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {docs.length > 0 && (
         <div className="card">
           <table>
@@ -406,11 +495,245 @@ function Library({ docs, onChange }) {
   );
 }
 
+function PlagiarismCheck({ docs }) {
+  const [file, setFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [report, setReport] = useState(null);
+
+  async function check() {
+    if (!file) return;
+    setBusy(true);
+    setError("");
+    try {
+      const payload = await api.checkPlagiarism(file);
+      setReport(payload);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <div className="page-title">
+        <div>
+          <h2>Plagiarism</h2>
+          <p>Upload a paper to score against your Library and academic indexes. The file is parsed, not added to the index.</p>
+        </div>
+      </div>
+      <div className="card plag-upload">
+        <label className="ghost upload-btn">
+          {file ? file.name : "Choose PDF, Word, or text"}
+          <input
+            type="file"
+            hidden
+            accept=".pdf,.docx,.txt,.md,.markdown,.html,.htm,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            disabled={busy}
+            onChange={(event) => {
+              setFile(event.target.files?.[0] || null);
+              setReport(null);
+            }}
+          />
+        </label>
+        <button className="primary" type="button" disabled={busy || !file} onClick={check}>
+          {busy ? "Checking…" : "Check plagiarism"}
+        </button>
+        {error && <span className="error">{error}</span>}
+      </div>
+      <p className="status plag-disclaimer">
+        Checked against your Library and academic indexes (title and abstract), not the full open web.
+        {docs.length === 0
+          ? " Your Library is empty; indexes can still match titles and abstracts."
+          : ""}
+      </p>
+      {report && <PlagiarismReportView report={report} />}
+    </>
+  );
+}
+
+function PlagiarismReportView({ report }) {
+  const plagiarismPct = Math.round((report.similarity ?? 0) * 100);
+  const originalityPct = Math.round((report.originality ?? 1) * 100);
+  const spans = report.spans?.length ? report.spans : report.flagged_sentences || [];
+  return (
+    <div className="plag-report">
+      <div className="grid two plag-scores">
+        <div className="card plag-score">
+          <h3>Plagiarism</h3>
+          <strong className={plagiarismTone(report.risk)}>{plagiarismPct}%</strong>
+          <p className="status">Overlapping wording vs Library and academic indexes</p>
+        </div>
+        <div className="card plag-score">
+          <h3>Originality</h3>
+          <strong className="good">{originalityPct}%</strong>
+          <p className="status">unique</p>
+        </div>
+      </div>
+      <div className="row" style={{ marginTop: 8 }}>
+        <button type="button" className="ghost" onClick={() => exportOriginalityReport(report)}>
+          Export report
+        </button>
+      </div>
+      <p className="status">
+        {report.filename} · {report.n_words} words
+        {report.n_pages ? ` · ${report.n_pages} page${report.n_pages === 1 ? "" : "s"}` : ""}
+        {report.risk ? ` · ${report.risk} risk` : ""}
+      </p>
+      {(report.flags || []).length > 0 && (
+        <p className="status">{report.flags.join(" ")}</p>
+      )}
+      <div className="card" style={{ marginTop: 16 }}>
+        <h3>Matching sources</h3>
+        {(report.sources || []).length === 0 ? (
+          <p className="status" style={{ marginTop: 0 }}>
+            {report.library_empty
+              ? "No Library papers and no overlapping academic abstracts."
+              : "No long overlapping passages were found."}
+          </p>
+        ) : (
+          <ul className="plain-list plag-sources">
+            {report.sources.map((source) => {
+              const href = paperHref(source);
+              return (
+                <li key={source.document_id}>
+                  <span className="plag-source-main">
+                    <span className={`flag ${source.origin === "academic" ? "warn" : "good"}`}>
+                      {source.origin === "academic" ? "Academic" : "Library"}
+                    </span>
+                    <span>{source.document_name}</span>
+                    {href && (
+                      <a className="ghost" href={href} target="_blank" rel="noreferrer">
+                        Open paper
+                      </a>
+                    )}
+                  </span>
+                  <strong>{Math.round((source.share ?? 0) * 100)}%</strong>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+      {(report.sections || []).length > 0 && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <h3>Section originality</h3>
+          <ul className="plain-list plag-sources">
+            {report.sections.map((section) => (
+              <li key={section.title}>
+                <span>{section.title}</span>
+                <strong>{Math.round((section.originality ?? 1) * 100)}% unique</strong>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {spans.length > 0 && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <h3>Originality view</h3>
+          <p className="status plag-legend" style={{ marginTop: 0 }}>
+            <span className="kind-original">Original</span>
+            <span className="kind-paraphrased">Paraphrased</span>
+            <span className="kind-verbatim">Verbatim uncited</span>
+          </p>
+          <div className="orig-view">
+            {spans.map((span, index) => (
+              <p key={`${span.kind}-${index}`} className={`orig-span kind-${span.kind || "verbatim"}`}>
+                {span.text}
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
+      {(report.flagged_sentences || []).length > 0 && (
+        <details className="card flagged-block" style={{ marginTop: 16 }} open>
+          <summary>Areas of correction ({report.flagged_sentences.length})</summary>
+          <ul className="plain-list flagged-list">
+            {report.flagged_sentences.map((row, index) => (
+              <li key={`${row.text}-${index}`}>
+                <p className={`flagged-sentence kind-${row.kind || "verbatim"}`}>{row.text}</p>
+                {row.kind && row.kind !== "original" && (
+                  <span className={`flag ${row.kind === "verbatim" ? "bad" : "warn"}`}>
+                    {row.kind === "verbatim" ? "Verbatim uncited" : "Paraphrased"}
+                  </span>
+                )}
+                <ul className="plain-list correction-hints">
+                  {correctionHints(row).map((hint) => (
+                    <li key={hint}>{hint}</li>
+                  ))}
+                </ul>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function plagiarismTone(risk) {
+  if (risk === "high") return "bad";
+  if (risk === "medium") return "warn";
+  return "good";
+}
+
+function correctionHints(row) {
+  if (row.corrections?.length) return row.corrections;
+  const lines = ["Reword this passage so it is not a long verbatim copy."];
+  const seen = new Set();
+  for (const match of row.matches || []) {
+    const name = match.document_name || match.document_id || "this source";
+    const page = match.page != null ? `, p. ${match.page}` : "";
+    const line = `Cite ${name}${page}.`;
+    if (seen.has(line)) continue;
+    seen.add(line);
+    lines.push(line);
+  }
+  return lines;
+}
+
+function verificationBadge(result) {
+  if (
+    result.unrelated_to_sources ||
+    result.abstained ||
+    result.status === "INSUFFICIENT_EVIDENCE"
+  ) {
+    return { label: "Unsupported", tone: "bad" };
+  }
+  const claims = result.claims || [];
+  if (!claims.length) {
+    if (result.status === "CONFLICTING_EVIDENCE") {
+      return { label: "Partially supported", tone: "warn" };
+    }
+    if (result.status === "ANSWERED" || result.status === "NO_RETRIEVAL_NEEDED") {
+      return { label: "Supported", tone: "good" };
+    }
+    return { label: "Unsupported", tone: "bad" };
+  }
+  const statuses = claims.map((claim) => claim.status);
+  if (statuses.some((status) => status === "UNSUPPORTED" || status === "CONTRADICTED")) {
+    return { label: "Unsupported", tone: "bad" };
+  }
+  if (statuses.some((status) => status === "PARTIALLY_SUPPORTED")) {
+    return { label: "Partially supported", tone: "warn" };
+  }
+  return { label: "Supported", tone: "good" };
+}
+
+function exportText(result) {
+  const cites = (result.evidence || [])
+    .map((item) => `[${item.citation_id}] ${item.apa || item.title || item.document_name}`)
+    .join("\n");
+  return cites ? `${result.answer}\n\n${cites}` : result.answer || "";
+}
+
 function AnswerView({ result, docs, selected, onSelect }) {
   const conf = result.confidence || {};
-  const status = STATUS_COPY[result.status] || { label: result.status, tone: "" };
   const lastGate = (result.gate_decisions || []).at(-1);
-  const [openCheck, setOpenCheck] = useState(false);
+  const [copied, setCopied] = useState("");
+  const [showFlagged, setShowFlagged] = useState(false);
+  const plag = result.plagiarism || {};
   const evidenceByCite = useMemo(() => {
     const map = new Map();
     for (const item of result.evidence || []) map.set(item.citation_id, item);
@@ -419,60 +742,97 @@ function AnswerView({ result, docs, selected, onSelect }) {
   const usedIds = new Set((result.evidence || []).map((item) => item.document_id));
   const usedNames = new Set((result.evidence || []).map((item) => item.document_name));
   const unused = docs.filter((d) => !usedIds.has(d.document_id) && !usedNames.has(d.name));
-  const loopSteps = loopFromTrace(result.trace);
   const contradictions = result.contradictions || [];
 
-  function selectClaim(claim) {
-    const cite = claim.supporting_citations?.[0] ?? claim.contradicting_citations?.[0];
-    if (cite != null && evidenceByCite.has(cite)) onSelect(evidenceByCite.get(cite));
+  function selectCite(id) {
+    const item = evidenceByCite.get(id);
+    if (item) onSelect(item);
+  }
+
+  async function copyAnswer() {
+    const ok = await copyText(exportText(result));
+    setCopied(ok ? "copy" : "failed");
+    setTimeout(() => setCopied(""), 1600);
+  }
+
+  function saveAnswer() {
+    const blob = new Blob([exportText(result)], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "self-rag-answer.txt";
+    link.click();
+    URL.revokeObjectURL(url);
   }
 
   return (
     <>
-      <div className="grid two" style={{ marginBottom: 16 }}>
-        <div className="card">
-          <div className="loop-steps" aria-label="Self-RAG loop">
-            {loopSteps.map((step) => (
-              <div key={step.stage} className={`loop-step ${step.tone || ""}`}>
-                <span className="loop-step-label">{step.label}</span>
-                {step.detail && <span className="loop-step-detail">{step.detail}</span>}
-              </div>
-            ))}
-          </div>
-          <div className="row" style={{ marginBottom: 8 }}>
-            <span className={`flag ${status.tone}`}>{status.label}</span>
-            {result.abstained && <span className="flag warn">Did not guess</span>}
-            {result.unrelated_to_sources && <span className="flag bad">Not in your files</span>}
-          </div>
+      <div className="ask-col ask-col-answer">
+        <div className="card answer-card">
+          <h3>Answer</h3>
           {result.unrelated_to_sources && (
             <p className="status" style={{ marginTop: 0 }}>
-              This question contradicts what the uploaded files can support: they do not cover it.
+              This question is not covered by your files.
             </p>
           )}
           {!result.unrelated_to_sources && result.status === "INSUFFICIENT_EVIDENCE" && (
             <p className="status" style={{ marginTop: 0 }}>
               The indexed files do not contain enough support for a reliable answer.
-              Try another question or add a source that covers this topic.
             </p>
           )}
-          {result.status === "CONFLICTING_EVIDENCE" && (
-            <p className="status" style={{ marginTop: 0 }}>
-              Sources disagree. Both views are shown instead of picking a winner.
-            </p>
+          <div className="answer">
+            <AnswerText
+              text={result.answer}
+              onCite={selectCite}
+              highlights={showFlagged ? (plag.matches || []).map((m) => m.text) : []}
+            />
+          </div>
+          <div className="export-bar">
+            <button type="button" className="ghost" onClick={copyAnswer}>
+              {copied === "copy" ? "Copied" : "Copy"}
+            </button>
+            <button type="button" className="ghost" onClick={saveAnswer}>
+              Save
+            </button>
+            {copied === "failed" && <span className="error">Copy failed</span>}
+          </div>
+          {(plag.flagged_sentences || []).length > 0 && (
+            <details
+              className="flagged-block"
+              onToggle={(event) => setShowFlagged(event.target.open)}
+            >
+              <summary>View flagged sentences ({plag.flagged_sentences.length})</summary>
+              <ul className="plain-list flagged-list">
+                {plag.flagged_sentences.map((row, index) => (
+                  <li key={`${row.text}-${index}`}>
+                    <p className="flagged-sentence">{row.text}</p>
+                    {(row.matches || []).map((match, mIndex) => (
+                      <button
+                        key={`${match.document_id}-${mIndex}`}
+                        type="button"
+                        className="flagged-source"
+                        onClick={() => {
+                          const item = (result.evidence || []).find(
+                            (ev) => ev.document_id === match.document_id,
+                          );
+                          if (item) onSelect(item);
+                        }}
+                      >
+                        <span className={`flag ${match.cited ? "good" : "bad"}`}>
+                          {match.cited ? "Cited" : "Uncited"}
+                        </span>
+                        {match.document_name}
+                        {match.page != null ? ` · p. ${match.page}` : ""}
+                      </button>
+                    ))}
+                  </li>
+                ))}
+              </ul>
+            </details>
           )}
-          <div className="answer">{result.answer}</div>
-          {result.unrelated_to_sources && (
-            <div className="mismatch">
-              <div>
-                <h3>Question</h3>
-                <p>{result.query}</p>
-              </div>
-              <div>
-                <h3>Your files</h3>
-                <p>{result.mismatch_detail || "Retrieved passages do not address this question."}</p>
-              </div>
-            </div>
-          )}
+        </div>
+        <details className="card details-card">
+          <summary>Details</summary>
           <div className="meta">
             <span>Confidence <strong>{pct(conf.confidence)}</strong></span>
             <span>Evidence <strong>{pct(lastGate?.evidence_score ?? conf.evidence_coverage)}</strong></span>
@@ -483,7 +843,6 @@ function AnswerView({ result, docs, selected, onSelect }) {
           {result.hallucination?.flags?.length > 0 && (
             <p className="error">{result.hallucination.flags.join(" · ")}</p>
           )}
-
           {contradictions.length > 0 && (
             <>
               <h3 style={{ marginTop: 16 }}>Source contradictions</h3>
@@ -502,7 +861,6 @@ function AnswerView({ result, docs, selected, onSelect }) {
               </ul>
             </>
           )}
-
           {(result.claims || []).length > 0 && (
             <>
               <h3 style={{ marginTop: 16 }}>Claims</h3>
@@ -512,134 +870,163 @@ function AnswerView({ result, docs, selected, onSelect }) {
                     <button
                       type="button"
                       className={`claim ${CLAIM_TONE[claim.status] || ""}`}
-                      onClick={() => selectClaim(claim)}
+                      onClick={() => {
+                        const cite = claim.supporting_citations?.[0] ?? claim.contradicting_citations?.[0];
+                        if (cite != null) selectCite(cite);
+                      }}
                     >
                       <span className={`flag ${CLAIM_TONE[claim.status] || ""}`}>{claim.status.replaceAll("_", " ")}</span>
                       <span>{claim.text}</span>
                     </button>
-                    {claimCiteGroups(claim, evidenceByCite).map((group) => (
-                      <div key={`${claim.claim_id}-${group.role}`}>
-                        <div className="status" style={{ margin: "8px 0 0 8px" }}>{group.label}</div>
-                        {group.items.map((item) => (
-                          <CitationCard
-                            key={`${claim.claim_id}-${group.role}-${item.citation_id}`}
-                            item={item}
-                            snippet={claim.best_evidence_span}
-                            onOpen={() => onSelect(item)}
-                            role={group.role}
-                          />
-                        ))}
-                      </div>
-                    ))}
                   </li>
                 ))}
               </ul>
             </>
           )}
-
-          <button className="ghost" style={{ marginTop: 12 }} onClick={() => setOpenCheck((v) => !v)}>
-            {openCheck ? "Hide how this was checked" : "How this was checked"}
-          </button>
-          {openCheck && (
-            <ul className="trace compact">
-              {(result.trace || []).map((event) => (
-                <li key={`${event.step}-${event.stage}`}>
-                  <span className={`dot ${event.status === "warn" ? "warn" : event.status === "skip" ? "skip" : ""}`} />
-                  <div>
-                    {event.label}
-                    {event.detail && <div className="detail">{event.detail}</div>}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-        <EvidencePanel item={selected} highlight={selectedClaimSpan(result, selected)} />
-      </div>
-
-      <div className="grid two">
-        <div className="card">
-          <h3>Used in this answer</h3>
-          {(result.evidence || []).length === 0 && (
-            <p className="status">No passages were cited.</p>
-          )}
-          <div className="sources">
-            {(result.evidence || []).map((item) => (
-              <div
-                key={item.chunk_id}
-                className={`source ${selected?.chunk_id === item.chunk_id ? "active" : ""}`}
-                onClick={() => onSelect(item)}
-              >
-                <div className="cite">
-                  [{item.citation_id}] {item.document_name}
-                  {item.page != null ? ` — page ${item.page}` : ""}
-                </div>
-                <p>{item.text.slice(0, 220)}{item.text.length > 220 ? "…" : ""}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-        <div className="card">
-          <h3>Not used</h3>
+          <h3 style={{ marginTop: 16 }}>Not used</h3>
           {unused.length === 0 ? (
             <p className="status">Every indexed file contributed, or the library is empty.</p>
           ) : (
             <ul className="plain-list">
               {unused.map((doc) => (
-                <li key={doc.document_id}>{doc.name}</li>
+                <li key={doc.document_id}>{doc.title || doc.name}</li>
               ))}
             </ul>
           )}
+          <h3 style={{ marginTop: 16 }}>Check trace</h3>
+          <ul className="trace compact">
+            {(result.trace || []).map((event) => (
+              <li key={`${event.step}-${event.stage}`}>
+                <span className={`dot ${event.status === "warn" ? "warn" : event.status === "skip" ? "skip" : ""}`} />
+                <div>
+                  {event.label}
+                  {event.detail && <div className="detail">{event.detail}</div>}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </details>
+      </div>
+
+      <div className="ask-col ask-col-evidence">
+        <div className="card">
+          <h3>Evidence</h3>
+          {(result.evidence || []).length === 0 && (
+            <p className="status">No passages were cited.</p>
+          )}
+          <div className="evidence-list">
+            {(result.evidence || []).map((item) => (
+              <EvidenceCard
+                key={item.chunk_id}
+                item={item}
+                active={selected?.chunk_id === item.chunk_id}
+                expanded={selected?.chunk_id === item.chunk_id}
+                onSelect={() => onSelect(item)}
+              />
+            ))}
+          </div>
         </div>
       </div>
     </>
   );
 }
 
-function loopFromTrace(trace) {
-  const order = [
-    ["retrieval", "Retrieve"],
-    ["evidence_gate", "Evidence gate"],
-    ["generate", "Draft"],
-    ["verify", "Verify claims"],
-    ["correction", "Self-correct"],
-    ["contradiction", "Conflicts"],
-    ["abstain", "Refuse"],
-    ["final", "Final"],
-  ];
-  const byStage = new Map();
-  for (const event of trace || []) byStage.set(event.stage, event);
-  const steps = [];
-  for (const [stage, label] of order) {
-    const event = byStage.get(stage);
-    if (!event) continue;
-    const tone = event.status === "warn" ? "warn" : event.status === "skip" ? "" : "good";
-    steps.push({
-      stage,
-      label,
-      detail: event.label,
-      tone,
-    });
-  }
-  if (steps.length) return steps;
-  return [
-    { stage: "retrieval", label: "Retrieve", detail: "", tone: "" },
-    { stage: "evidence_gate", label: "Evidence gate", detail: "", tone: "" },
-    { stage: "verify", label: "Verify claims", detail: "", tone: "" },
-  ];
+function AnswerText({ text, onCite, highlights = [] }) {
+  const parts = String(text || "").split(/(\[\d+\])/g);
+  return parts.map((part, index) => {
+    const match = part.match(/^\[(\d+)\]$/);
+    if (match) {
+      const id = Number(match[1]);
+      return (
+        <button key={`${part}-${index}`} type="button" className="cite-link" onClick={() => onCite(id)}>
+          [{id}]
+        </button>
+      );
+    }
+    return <span key={index}>{markOverlaps(part, highlights)}</span>;
+  });
 }
 
-function claimCiteGroups(claim, evidenceByCite) {
-  const support = [...new Set(claim.supporting_citations || [])]
-    .map((id) => evidenceByCite.get(id))
-    .filter(Boolean);
-  const contra = [...new Set(claim.contradicting_citations || [])]
-    .map((id) => evidenceByCite.get(id))
-    .filter(Boolean);
-  const groups = [];
-  if (support.length) groups.push({ role: "supports", label: "Supports", items: support });
-  if (contra.length) groups.push({ role: "contradicts", label: "Contradicts", items: contra });
-  return groups;
+function markOverlaps(text, highlights) {
+  if (!text || !highlights?.length) return text;
+  const needles = [...new Set(highlights.filter(Boolean))].sort((a, b) => b.length - a.length);
+  const lower = text.toLowerCase();
+  let cut = 0;
+  const nodes = [];
+  while (cut < text.length) {
+    let best = null;
+    for (const needle of needles) {
+      const at = lower.indexOf(needle.toLowerCase(), cut);
+      if (at === -1) continue;
+      if (!best || at < best.at || (at === best.at && needle.length > best.needle.length)) {
+        best = { at, needle };
+      }
+    }
+    if (!best) {
+      nodes.push(text.slice(cut));
+      break;
+    }
+    if (best.at > cut) nodes.push(text.slice(cut, best.at));
+    nodes.push(
+      <mark key={`${best.at}-${best.needle.length}`} className="highlight">
+        {text.slice(best.at, best.at + best.needle.length)}
+      </mark>,
+    );
+    cut = best.at + best.needle.length;
+  }
+  return nodes;
+}
+
+function EvidenceCard({ item, active, expanded, onSelect }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState("");
+  useEffect(() => {
+    if (active || expanded) setOpen(true);
+  }, [active, expanded]);
+  const showFull = open;
+  const authors = (item.authors || []).join(", ") || "Unknown author";
+  const year = item.year || "n.d.";
+  const snippet = item.text.slice(0, 160);
+
+  async function copy(kind) {
+    const ok = await copyText(kind === "apa" ? item.apa : item.bibtex);
+    setCopied(ok ? kind : "failed");
+    setTimeout(() => setCopied(""), 1600);
+  }
+
+  return (
+    <div className={`evidence-card ${active ? "active" : ""}`}>
+      <button type="button" className="evidence-card-main" onClick={onSelect}>
+        <div className="cite">[{item.citation_id}] {item.title || item.document_name}</div>
+        <div className="status" style={{ margin: "4px 0 0" }}>
+          {authors} · {year}
+          {item.page != null ? ` · p. ${item.page}` : ""}
+          {item.doi ? ` · ${item.doi}` : ""}
+        </div>
+        <p className="cite-snippet">{showFull ? item.text : `${snippet}${item.text.length > 160 ? "…" : ""}`}</p>
+      </button>
+      <div className="row" style={{ marginTop: 8 }}>
+        <button
+          type="button"
+          className="ghost"
+          onClick={() => setOpen((value) => !value)}
+        >
+          {showFull ? "View less" : "View more"}
+        </button>
+        {showFull && (
+          <>
+            <button type="button" className="ghost" onClick={() => copy("apa")}>
+              {copied === "apa" ? "Copied APA" : "Copy APA"}
+            </button>
+            <button type="button" className="ghost" onClick={() => copy("bibtex")}>
+              {copied === "bibtex" ? "Copied BibTeX" : "Copy BibTeX"}
+            </button>
+          </>
+        )}
+        {copied === "failed" && <span className="error">Copy failed</span>}
+      </div>
+    </div>
+  );
 }
 
 async function copyText(text) {
@@ -652,93 +1039,48 @@ async function copyText(text) {
   }
 }
 
-function CitationCard({ item, snippet, onOpen, role }) {
-  const [copied, setCopied] = useState("");
-  const authors = (item.authors || []).join(", ") || "Unknown author";
-  const year = item.year || "n.d.";
-
-  async function copy(kind) {
-    const ok = await copyText(kind === "apa" ? item.apa : item.bibtex);
-    setCopied(ok ? kind : "failed");
-    setTimeout(() => setCopied(""), 1600);
+function exportOriginalityReport(report) {
+  const plag = Math.round((report.similarity ?? 0) * 100);
+  const orig = Math.round((report.originality ?? 1) * 100);
+  const lines = [
+    `Originality report: ${report.filename || "upload"}`,
+    `Plagiarism ${plag}% · Originality ${orig}% unique · ${report.risk || "low"} risk`,
+    (report.flags || []).join(" "),
+    "",
+    "Sources",
+    ...(report.sources || []).map(
+      (source) =>
+        `- ${source.origin === "academic" ? "Academic" : "Library"} ${source.document_name} (${Math.round((source.share ?? 0) * 100)}%)`,
+    ),
+    "",
+    "Sections",
+    ...(report.sections || []).map(
+      (section) =>
+        `- ${section.title}: ${Math.round((section.originality ?? 1) * 100)}% unique (${section.n_flagged || 0} flagged)`,
+    ),
+    "",
+    "Flagged passages",
+  ];
+  for (const row of report.flagged_sentences || []) {
+    lines.push(`[${row.kind || "verbatim"}] ${row.text}`);
+    for (const hint of correctionHints(row)) lines.push(`  · ${hint}`);
   }
-
-  return (
-    <div className={`cite-card ${role === "contradicts" ? "contra" : ""}`}>
-      <button type="button" className="cite-card-main" onClick={onOpen}>
-        <div className="cite-card-title">{item.title || item.document_name}</div>
-        <div className="status" style={{ margin: 0 }}>
-          {authors} · {year}
-          {item.page != null ? ` · p. ${item.page}` : ""}
-          {item.venue ? ` · ${item.venue}` : ""}
-        </div>
-        {snippet && <p className="cite-snippet">{snippet}</p>}
-      </button>
-      <div className="row" style={{ marginTop: 8 }}>
-        <button type="button" className="ghost" onClick={() => copy("apa")}>
-          {copied === "apa" ? "Copied APA" : "Copy APA"}
-        </button>
-        <button type="button" className="ghost" onClick={() => copy("bibtex")}>
-          {copied === "bibtex" ? "Copied BibTeX" : "Copy BibTeX"}
-        </button>
-        {copied === "failed" && <span className="error">Copy failed</span>}
-      </div>
-    </div>
-  );
-}
-
-function selectedClaimSpan(result, selected) {
-  if (!selected) return "";
-  const claim = (result.claims || []).find(
-    (c) =>
-      c.supporting_citations?.includes(selected.citation_id) ||
-      c.contradicting_citations?.includes(selected.citation_id),
-  );
-  return claim?.best_evidence_span || "";
-}
-
-function EvidencePanel({ item, highlight }) {
-  if (!item) {
-    return (
-      <div className="card">
-        <h3>Evidence</h3>
-        <p className="status">Click a claim or a citation to see the supporting passage.</p>
-      </div>
-    );
-  }
-  return (
-    <div className="card">
-      <h3>Evidence</h3>
-      <div className="cite" style={{ color: "var(--blue)", fontFamily: "var(--mono)", marginBottom: 8 }}>
-        [{item.citation_id}] {item.document_name}
-        {item.page != null ? ` — page ${item.page}` : ""}
-        {item.section ? ` · ${item.section}` : ""}
-      </div>
-      <p className="answer">{highlightText(item.text, highlight)}</p>
-    </div>
-  );
-}
-
-function highlightText(text, span) {
-  if (!span || !text.toLowerCase().includes(span.toLowerCase())) return text;
-  const index = text.toLowerCase().indexOf(span.toLowerCase());
-  const before = text.slice(0, index);
-  const match = text.slice(index, index + span.length);
-  const after = text.slice(index + span.length);
-  return (
-    <>
-      {before}
-      <mark className="highlight">{match}</mark>
-      {after}
-    </>
-  );
+  const blob = new Blob([lines.filter((line) => line != null).join("\n")], {
+    type: "text/plain;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "originality-report.txt";
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 function HistoryList({ items, onPick }) {
   if (!items?.length) return null;
   return (
-    <div className="card" style={{ marginTop: 16 }}>
-      <h3>Recent questions</h3>
+    <details className="card history-card">
+      <summary>Recent questions</summary>
       <ul className="plain-list history">
         {items.map((item) => (
           <li key={item.query_id}>
@@ -752,6 +1094,7 @@ function HistoryList({ items, onPick }) {
           </li>
         ))}
       </ul>
-    </div>
+    </details>
   );
 }
+

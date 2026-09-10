@@ -47,6 +47,7 @@ from ..verification.confidence import score_confidence
 from ..verification.contradiction import detect_contradictions
 from ..verification.evidence_gate import EvidenceGate, decision_is_unrelated
 from ..verification.hallucination import detect_hallucinations
+from ..verification.plagiarism import check_plagiarism
 from .common import (
     TraceRecorder,
     UsageCounter,
@@ -776,6 +777,24 @@ class PipelineRunner:
                     "coverage": confidence.evidence_coverage,
                 },
             )
+        plagiarism = check_plagiarism(
+            answer,
+            evidence,
+            self.kb.store.all_chunks(),
+            self.settings,
+        )
+        trace.add(
+            "plagiarism",
+            f"Originality {plagiarism.originality:.0%} unique ({plagiarism.risk} overlap risk)",
+            status="warn" if plagiarism.risk != "low" else "ok",
+            detail="; ".join(plagiarism.flags) or None,
+            metrics={
+                "originality": plagiarism.originality,
+                "overlap_ratio": plagiarism.overlap_ratio,
+                "risk": plagiarism.risk,
+                "n_matches": len(plagiarism.matches),
+            },
+        )
         if status is AnswerStatus.answered:
             trace.add("final", "Final answer approved")
         elif status is AnswerStatus.conflicting_evidence:
@@ -798,6 +817,7 @@ class PipelineRunner:
             contradictions=contradictions,
             confidence=confidence,
             hallucination=hallucination,
+            plagiarism=plagiarism,
             trace=trace.events,
             metrics=usage.metrics(latency_ms),
             rewritten_queries=rewritten,

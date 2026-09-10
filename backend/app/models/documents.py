@@ -75,3 +75,16 @@ class DocumentListResponse(BaseModel):
     total_chunks: int
     embedding_provider: str
     vector_store: str
+
+
+class ThemeCluster(BaseModel):
+    cluster_id: str
+    label: str
+    keywords: list[str] = Field(default_factory=list)
+    document_ids: list[str] = Field(default_factory=list)
+    size: int = 0
+
+
+class ClusterResponse(BaseModel):
+    clusters: list[ThemeCluster] = Field(default_factory=list)
+    total_documents: int = 0

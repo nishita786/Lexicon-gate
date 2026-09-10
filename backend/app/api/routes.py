@@ -17,7 +17,14 @@ from ..evaluation.harness import (
     load_latest_run,
     summarise,
 )
-from ..models.documents import Document, DocumentBiblioUpdate, DocumentListResponse, UploadResponse
+from ..models.documents import (
+    ClusterResponse,
+    Document,
+    DocumentBiblioUpdate,
+    DocumentListResponse,
+    UploadResponse,
+)
+from ..services.clustering import cluster_documents
 from ..models.papers import PaperImportRequest, PaperImportResponse, PaperSearchResponse
 from ..services.papers.import_paper import import_paper
 from ..services.papers.search import search_papers
@@ -26,6 +33,7 @@ from ..models.query import (
     CompareRequest,
     CompareResponse,
     ComparisonRow,
+    PaperPlagiarismCheck,
     PipelineName,
     PipelineResult,
     QueryRequest,
@@ -39,7 +47,9 @@ from ..pipelines.runner import (
 from ..services.embeddings.registry import available_embedding_providers, get_embedding_provider
 from ..services.llm.registry import available_llm_providers, get_llm_provider
 from ..services.store.history import history
+from ..services.ingestion.loaders import UnsupportedDocumentError, load_bytes
 from ..services.store.knowledge_base import get_knowledge_base
+from ..verification.plagiarism import score_uploaded_paper
 from ..services.vectorstore.registry import available_vector_stores
 
 logger = logging.getLogger(__name__)
@@ -192,6 +202,11 @@ def list_documents() -> DocumentListResponse:
     )
 
 
+@router.get("/documents/clusters", response_model=ClusterResponse, tags=["documents"])
+def document_clusters() -> ClusterResponse:
+    return cluster_documents(get_knowledge_base())
+
+
 @router.patch("/documents/{document_id}", response_model=Document, tags=["documents"])
 def update_document(document_id: str, payload: DocumentBiblioUpdate) -> Document:
     kb = get_knowledge_base()
@@ -214,6 +229,30 @@ def reload_demo_corpus() -> dict[str, Any]:
     kb = get_knowledge_base()
     stats = load_demo_corpus(kb, reset=True)
     return {"status": "ok", **stats}
+
+
+@router.post("/plagiarism/check", response_model=PaperPlagiarismCheck, tags=["plagiarism"])
+async def plagiarism_check(file: UploadFile = File(...)) -> PaperPlagiarismCheck:
+    settings = get_settings()
+    name = Path(file.filename or "untitled.txt").name
+    if not name or name in {".", ".."}:
+        name = "untitled.txt"
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty file.")
+    if len(data) > settings.paper_pdf_max_bytes:
+        raise HTTPException(status_code=413, detail="File is too large to check.")
+    try:
+        pages = load_bytes(name, data)
+    except UnsupportedDocumentError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Failed to parse plagiarism upload")
+        raise HTTPException(status_code=400, detail=f"Could not read file: {exc}") from exc
+    if not any(page.text.strip() for page in pages):
+        raise HTTPException(status_code=400, detail="No text could be extracted from the file.")
+    kb = get_knowledge_base()
+    return score_uploaded_paper(name, pages, kb.store.all_chunks(), settings)
 
 
 # --------------------------------------------------------------------------- papers

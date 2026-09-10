@@ -8,7 +8,7 @@ It will refuse when the sources cannot support a reliable answer. It does not fi
 
 1. **Find papers** — search Semantic Scholar (OpenAlex fallback) and add a paper to your library.
 2. **Library** — your sources (imported papers or uploaded files).
-3. **Ask** — one Enhanced Self-RAG answer with citations, claim labels, confidence, and Copy APA / BibTeX.
+3. **Ask** — question, one verification badge (Supported / Partially supported / Unsupported), copyable answer with citations, and compact evidence cards.
 
 There is no notebook, no pipeline picker, and no research comparison screen. Evaluation stays in pytest for quality checks.
 

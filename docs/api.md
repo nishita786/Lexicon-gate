@@ -25,11 +25,21 @@ Public runtime knobs (thresholds, k, loop caps). No secrets.
 
 Indexed documents, chunk counts, active providers.
 
+### `GET /documents/clusters`
+
+Theme groups of library papers (agglomerative cosine clustering of document embeddings). Each cluster has a label, keywords, and `document_ids` for scoped Ask.
+
 ### `DELETE /documents/{document_id}`
 
 ### `POST /documents/demo`
 
 Reload the bundled research corpus. Used by pytest and `/evaluate`, not by the product UI.
+
+## Plagiarism
+
+### `POST /plagiarism/check`
+
+`multipart/form-data` field `file` (PDF, docx, txt, md, html). Parses the upload without ingesting it, then scores n-gram overlap against Library chunks and against Semantic Scholar / OpenAlex / Crossref **title + abstract** hits. Close wording (token Jaccard) is marked paraphrased. Returns similarity, originality, sources, color-coded `spans`, per-section originality, and flagged sentences with corrections. Empty library → `library_empty: true`; similarity can still be > 0 from abstracts.
 
 ## Query
 

@@ -167,6 +167,65 @@ class HallucinationReport(BaseModel):
     severity: str = "none"
 
 
+class PlagiarismMatch(BaseModel):
+    text: str
+    document_id: str = ""
+    document_name: str = ""
+    page: int | None = None
+    cited: bool = False
+    n_words: int = 0
+
+
+class FlaggedSentence(BaseModel):
+    text: str
+    matches: list[PlagiarismMatch] = Field(default_factory=list)
+    corrections: list[str] = Field(default_factory=list)
+    kind: str = "verbatim"
+    section: str = ""
+
+
+class SectionOriginality(BaseModel):
+    title: str
+    originality: float = 1.0
+    n_sentences: int = 0
+    n_flagged: int = 0
+
+
+class PlagiarismReport(BaseModel):
+    originality: float = 1.0
+    overlap_ratio: float = 0.0
+    risk: str = "low"
+    matches: list[PlagiarismMatch] = Field(default_factory=list)
+    flagged_sentences: list[FlaggedSentence] = Field(default_factory=list)
+    flags: list[str] = Field(default_factory=list)
+
+
+class PlagiarismSourceShare(BaseModel):
+    document_id: str
+    document_name: str
+    n_words: int = 0
+    share: float = 0.0
+    origin: str = "library"
+    url: str | None = None
+    doi: str | None = None
+
+
+class PaperPlagiarismCheck(BaseModel):
+    filename: str
+    n_words: int = 0
+    n_pages: int = 0
+    similarity: float = 0.0
+    originality: float = 1.0
+    risk: str = "low"
+    library_empty: bool = False
+    matches: list[PlagiarismMatch] = Field(default_factory=list)
+    flagged_sentences: list[FlaggedSentence] = Field(default_factory=list)
+    sources: list[PlagiarismSourceShare] = Field(default_factory=list)
+    flags: list[str] = Field(default_factory=list)
+    spans: list[FlaggedSentence] = Field(default_factory=list)
+    sections: list[SectionOriginality] = Field(default_factory=list)
+
+
 class TraceEvent(BaseModel):
     """A single structured, user-visible system event.
 
@@ -212,6 +271,7 @@ class PipelineResult(BaseModel):
     contradictions: list[ContradictionPair] = Field(default_factory=list)
     confidence: ConfidenceReport = Field(default_factory=ConfidenceReport)
     hallucination: HallucinationReport = Field(default_factory=HallucinationReport)
+    plagiarism: PlagiarismReport = Field(default_factory=PlagiarismReport)
     trace: list[TraceEvent] = Field(default_factory=list)
     metrics: SystemMetrics = Field(default_factory=SystemMetrics)
     config_snapshot: dict[str, Any] = Field(default_factory=dict)

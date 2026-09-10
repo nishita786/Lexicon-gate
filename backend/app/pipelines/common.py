@@ -17,6 +17,7 @@ from ..models.query import (
     HallucinationReport,
     PipelineName,
     PipelineResult,
+    PlagiarismReport,
     SystemMetrics,
     TraceEvent,
 )
@@ -139,6 +140,7 @@ def build_result(
     config_snapshot: dict[str, Any] | None = None,
     unrelated_to_sources: bool = False,
     mismatch_detail: str | None = None,
+    plagiarism: PlagiarismReport | None = None,
 ) -> PipelineResult:
     return PipelineResult(
         query_id=query_id,
@@ -159,6 +161,7 @@ def build_result(
         contradictions=contradictions,
         confidence=confidence,
         hallucination=hallucination,
+        plagiarism=plagiarism or PlagiarismReport(),
         trace=trace,
         metrics=metrics,
         config_snapshot=config_snapshot or {},

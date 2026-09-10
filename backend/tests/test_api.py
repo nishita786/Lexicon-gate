@@ -49,6 +49,154 @@ def test_list_documents(client: TestClient):
     assert response.json()["total_documents"] == 0
 
 
+LONG_PLAGIARISM = (
+    "Dropout randomly disables units in a neural network during training so that "
+    "hidden units cannot co-adapt and the model generalises better on unseen data."
+)
+
+
+def test_plagiarism_check_empty_library(client: TestClient, monkeypatch):
+    monkeypatch.setattr("app.verification.plagiarism.search_papers", lambda *a, **k: ([], "none"))
+    response = client.post(
+        "/api/plagiarism/check",
+        files={"file": ("unique.txt", b"A wholly original note about garden soil pH.\n", "text/plain")},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["similarity"] == 0
+    assert body["originality"] == 1
+    assert body["library_empty"] is True
+    assert body["filename"] == "unique.txt"
+    assert client.get("/api/documents").json()["total_documents"] == 0
+
+
+def test_plagiarism_check_against_library_does_not_ingest(client: TestClient, monkeypatch):
+    monkeypatch.setattr("app.verification.plagiarism.search_papers", lambda *a, **k: ([], "none"))
+    ingested = client.post(
+        "/api/documents/upload",
+        files=[("files", ("handbook.md", f"# Handbook\n\n{LONG_PLAGIARISM}\n".encode(), "text/markdown"))],
+    )
+    assert ingested.status_code == 200
+    before = client.get("/api/documents").json()["total_documents"]
+    copied = (
+        "Notes for class.\n\n"
+        f"{LONG_PLAGIARISM}\n\n"
+        "The rest of this draft is my own wording about coursework deadlines.\n"
+    )
+    checked = client.post(
+        "/api/plagiarism/check",
+        files={"file": ("draft.txt", copied.encode(), "text/plain")},
+    )
+    assert checked.status_code == 200
+    body = checked.json()
+    assert body["library_empty"] is False
+    assert body["similarity"] > 0
+    assert body["originality"] < 1
+    assert body["sources"]
+    assert "handbook" in body["sources"][0]["document_name"].lower()
+    assert body["flagged_sentences"]
+    after = client.get("/api/documents").json()["total_documents"]
+    assert after == before
+
+
+def test_plagiarism_check_academic_abstract(client: TestClient, monkeypatch):
+    from app.models.papers import PaperHit
+
+    def fake_search(query, limit=10, **kwargs):
+        return (
+            [
+                PaperHit(
+                    paper_id="abs-1",
+                    title="Dropout regularisation",
+                    abstract=LONG_PLAGIARISM,
+                    source="semantic_scholar",
+                    url="https://example.org/dropout",
+                    doi="10.1/dropout",
+                )
+            ],
+            "semantic_scholar",
+        )
+
+    monkeypatch.setattr("app.verification.plagiarism.search_papers", fake_search)
+    copied = f"Class notes.\n\n{LONG_PLAGIARISM}\n"
+    before = client.get("/api/documents").json()["total_documents"]
+    checked = client.post(
+        "/api/plagiarism/check",
+        files={"file": ("draft.txt", copied.encode(), "text/plain")},
+    )
+    assert checked.status_code == 200
+    body = checked.json()
+    assert body["library_empty"] is True
+    assert body["similarity"] > 0
+    assert body["sources"]
+    assert body["sources"][0]["origin"] == "academic"
+    assert "dropout" in body["sources"][0]["document_name"].lower()
+    assert body["sources"][0]["url"]
+    assert client.get("/api/documents").json()["total_documents"] == before
+
+
+def test_plagiarism_check_academic_search_fails(client: TestClient, monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("index down")
+
+    monkeypatch.setattr("app.verification.plagiarism.search_papers", boom)
+    response = client.post(
+        "/api/plagiarism/check",
+        files={"file": ("unique.txt", b"A wholly original note about garden soil pH.\n", "text/plain")},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["similarity"] == 0
+    assert any("unavailable" in flag.lower() for flag in body["flags"])
+
+
+def test_clusters_empty(client: TestClient):
+    response = client.get("/api/documents/clusters")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_documents"] == 0
+    assert body["clusters"] == []
+
+
+def test_clusters_after_upload(client: TestClient):
+    first = client.post(
+        "/api/documents/upload",
+        files=[
+            (
+                "files",
+                (
+                    "dropout.md",
+                    b"# Dropout regularisation\n\nDropout reduces overfitting in neural networks.\n",
+                    "text/markdown",
+                ),
+            )
+        ],
+    )
+    assert first.status_code == 200
+    second = client.post(
+        "/api/documents/upload",
+        files=[
+            (
+                "files",
+                (
+                    "climate.md",
+                    b"# Climate change adaptation\n\nCoastal cities adapt to flooding and heat.\n",
+                    "text/markdown",
+                ),
+            )
+        ],
+    )
+    assert second.status_code == 200
+    clustered = client.get("/api/documents/clusters")
+    assert clustered.status_code == 200
+    body = clustered.json()
+    assert body["total_documents"] == 2
+    assert len(body["clusters"]) >= 1
+    assigned = [doc_id for cluster in body["clusters"] for doc_id in cluster["document_ids"]]
+    assert len(assigned) == 2
+    assert all(cluster["label"] for cluster in body["clusters"])
+
+
 def test_upload_and_query(client: TestClient):
     upload = client.post(
         "/api/documents/upload",

@@ -15,8 +15,9 @@ logger = logging.getLogger(__name__)
 TEXT_SUFFIXES = {".txt", ".md", ".markdown", ".rst", ".csv", ".json", ".log"}
 PDF_SUFFIXES = {".pdf"}
 HTML_SUFFIXES = {".html", ".htm"}
+DOCX_SUFFIXES = {".docx"}
 
-SUPPORTED_SUFFIXES = TEXT_SUFFIXES | PDF_SUFFIXES | HTML_SUFFIXES
+SUPPORTED_SUFFIXES = TEXT_SUFFIXES | PDF_SUFFIXES | HTML_SUFFIXES | DOCX_SUFFIXES
 
 
 @dataclass(slots=True)
@@ -43,6 +44,8 @@ def load_document(path: Path | str) -> list[LoadedPage]:
     suffix = path.suffix.lower()
     if suffix in PDF_SUFFIXES:
         return _load_pdf(path)
+    if suffix in DOCX_SUFFIXES:
+        return _load_docx_bytes(path.read_bytes())
     if suffix in HTML_SUFFIXES:
         return _load_html(path)
     if suffix in TEXT_SUFFIXES or suffix == "":
@@ -52,6 +55,16 @@ def load_document(path: Path | str) -> list[LoadedPage]:
     )
 
 
+def _pdf_reader():
+    try:
+        from pypdf import PdfReader  # noqa: PLC0415
+    except ImportError as exc:
+        raise UnsupportedDocumentError(
+            "PDF support requires the pypdf package (pip install pypdf)."
+        ) from exc
+    return PdfReader
+
+
 def load_bytes(name: str, data: bytes) -> list[LoadedPage]:
     """Load from raw bytes by writing to a temporary file when needed."""
 
@@ -59,20 +72,34 @@ def load_bytes(name: str, data: bytes) -> list[LoadedPage]:
     if suffix in PDF_SUFFIXES:
         import io
 
-        from pypdf import PdfReader  # noqa: PLC0415
-
-        reader = PdfReader(io.BytesIO(data))
+        reader = _pdf_reader()(io.BytesIO(data))
         return _pages_from_reader(reader)
+    if suffix in DOCX_SUFFIXES:
+        return _load_docx_bytes(data)
     text = data.decode("utf-8", errors="replace")
     if suffix in HTML_SUFFIXES:
         text = _strip_html(text)
     return _paginate_text(text)
 
 
-def _load_pdf(path: Path) -> list[LoadedPage]:
-    from pypdf import PdfReader  # noqa: PLC0415
+def _load_docx_bytes(data: bytes) -> list[LoadedPage]:
+    import io
 
-    reader = PdfReader(str(path))
+    try:
+        from docx import Document  # noqa: PLC0415
+    except ImportError as exc:
+        raise UnsupportedDocumentError(
+            "Word (.docx) support requires the python-docx package (pip install python-docx)."
+        ) from exc
+    document = Document(io.BytesIO(data))
+    text = "\n\n".join(para.text for para in document.paragraphs if para.text.strip())
+    if not text.strip():
+        return [LoadedPage(page=1, text="")]
+    return _paginate_text(text)
+
+
+def _load_pdf(path: Path) -> list[LoadedPage]:
+    reader = _pdf_reader()(str(path))
     return _pages_from_reader(reader)
 
 
@@ -161,7 +188,7 @@ def extract_bibliography(name: str, data: bytes | None = None, path: Path | str 
     if suffix not in PDF_SUFFIXES:
         return biblio
     try:
-        from pypdf import PdfReader  # noqa: PLC0415
+        PdfReader = _pdf_reader()
 
         if data is not None:
             import io

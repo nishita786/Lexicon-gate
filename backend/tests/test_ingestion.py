@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+
+import pytest
 
 from app.services.ingestion.chunker import chunk_page, detect_heading, split_into_sections
 from app.services.ingestion.cleaner import clean_page, strip_repeated_lines
-from app.services.ingestion.loaders import load_bytes, load_document
+from app.services.ingestion.loaders import UnsupportedDocumentError, load_bytes, load_document
 from app.services.store.document_store import DocumentStore
 from app.services.ingestion.loaders import LoadedPage
 
@@ -66,6 +69,27 @@ def test_load_text_and_bytes(tmp_path: Path):
     assert pages[0].text
     loaded = load_bytes("note.md", b"# Title\n\nHello world.\n")
     assert loaded[0].text
+
+
+def test_load_pdf_without_pypdf(monkeypatch):
+    monkeypatch.setitem(sys.modules, "pypdf", None)
+    with pytest.raises(UnsupportedDocumentError, match="pypdf"):
+        load_bytes("paper.pdf", b"%PDF-1.4\n")
+
+
+def test_load_docx_bytes():
+    pytest.importorskip("docx")
+    from io import BytesIO
+
+    from docx import Document
+
+    document = Document()
+    document.add_paragraph("Dropout reduces overfitting in neural networks.")
+    buf = BytesIO()
+    document.save(buf)
+    pages = load_bytes("notes.docx", buf.getvalue())
+    assert pages
+    assert "Dropout" in pages[0].text
 
 
 def test_document_store_roundtrip(settings):

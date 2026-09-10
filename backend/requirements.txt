@@ -5,6 +5,7 @@ pydantic-settings
 numpy
 scikit-learn
 pypdf
+python-docx
 python-multipart
 httpx
 pytest

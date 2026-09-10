@@ -18,6 +18,7 @@ async function request(path, options = {}) {
 export const api = {
   health: () => request("/health"),
   documents: () => request("/documents"),
+  clusters: () => request("/documents/clusters"),
   upload: (files) => {
     const data = new FormData();
     for (const file of files) data.append("files", file);
@@ -32,6 +33,11 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
+  checkPlagiarism: (file) => {
+    const data = new FormData();
+    data.append("file", file);
+    return request("/plagiarism/check", { method: "POST", body: data });
+  },
   query: (payload) =>
     request("/query", {
       method: "POST",
