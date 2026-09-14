@@ -11,3 +11,8 @@ httpx
 pytest
 pytest-asyncio
 python-dotenv
+matplotlib>=3.8
+
+# Optional NLI claim verifier (CPU). pip install -r requirements-nli.txt
+# transformers>=4.36
+# torch>=2.1

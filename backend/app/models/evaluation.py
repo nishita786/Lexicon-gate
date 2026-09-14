@@ -181,6 +181,7 @@ class EvaluateRequest(BaseModel):
     categories: list[QuestionCategory] | None = None
     k: int = 5
     persist: bool = True
+    include_headline: bool = False
 
 
 class EvaluationSummary(BaseModel):

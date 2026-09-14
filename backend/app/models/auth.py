@@ -1,0 +1,22 @@
+"""Auth request and response models."""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, Field
+
+
+class SignupRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=8, max_length=256)
+    name: str = Field(default="", max_length=80)
+
+
+class LoginRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    password: str = Field(min_length=8, max_length=256)
+
+
+class UserPublic(BaseModel):
+    user_id: str
+    email: str
+    name: str = ""

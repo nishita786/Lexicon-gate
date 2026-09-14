@@ -5,6 +5,30 @@ OpenAPI: `http://127.0.0.1:8000/docs`
 
 All successful bodies are JSON. Errors use FastAPI's `{ "detail": ... }` shape. The frontend never receives provider API keys.
 
+When `SELFRAG_AUTH_REQUIRED` is true (the product default), product routes need a session cookie from login or signup. Pytest turns this off. `GET /health` and `GET /config` stay public.
+
+## Auth
+
+### `POST /auth/signup`
+
+```json
+{ "email": "you@example.com", "password": "at-least-8", "name": "Optional" }
+```
+
+Creates an account, sets an HttpOnly `selfrag_session` cookie, and returns `{ user_id, email, name }`. Duplicate email → 409.
+
+### `POST /auth/login`
+
+Same email/password body. Wrong credentials → 401.
+
+### `POST /auth/logout`
+
+Clears the session cookie.
+
+### `GET /auth/me`
+
+Current user, or 401.
+
 ## System
 
 ### `GET /health`
@@ -25,6 +49,20 @@ Public runtime knobs (thresholds, k, loop caps). No secrets.
 
 Indexed documents, chunk counts, active providers.
 
+### `GET /documents/extractions`
+
+Per-paper structured records (`objective`, `method`, `dataset`, `metric`, `result`, `limitation`) extracted at ingest. Independent of Ask. Each field includes `low_confidence` when NLI/overlap checks fail; values are not dropped.
+
+### `POST /documents/extractions/refresh`
+
+Re-run extraction for every library paper.
+
+### `GET /documents/{document_id}/extraction`
+
+### `POST /documents/{document_id}/extract`
+
+Re-run extraction for one paper.
+
 ### `GET /documents/clusters`
 
 Theme groups of library papers (agglomerative cosine clustering of document embeddings). Each cluster has a label, keywords, and `document_ids` for scoped Ask.
@@ -34,12 +72,6 @@ Theme groups of library papers (agglomerative cosine clustering of document embe
 ### `POST /documents/demo`
 
 Reload the bundled research corpus. Used by pytest and `/evaluate`, not by the product UI.
-
-## Plagiarism
-
-### `POST /plagiarism/check`
-
-`multipart/form-data` field `file` (PDF, docx, txt, md, html). Parses the upload without ingesting it, then scores n-gram overlap against Library chunks and against Semantic Scholar / OpenAlex / Crossref **title + abstract** hits. Close wording (token Jaccard) is marked paraphrased. Returns similarity, originality, sources, color-coded `spans`, per-section originality, and flagged sentences with corrections. Empty library → `library_empty: true`; similarity can still be > 0 from abstracts.
 
 ## Query
 
@@ -81,6 +113,7 @@ Structured system events for a recent query.
 {
   "pipelines": ["traditional_rag", "self_rag", "enhanced_self_rag"],
   "include_ablation": true,
+  "include_headline": false,
   "limit": null,
   "categories": null,
   "k": 5,
@@ -88,7 +121,7 @@ Structured system events for a recent query.
 }
 ```
 
-Returns a full `EvaluationRun` (several seconds on the demo set).
+Returns a full `EvaluationRun` (several seconds on the demo set). Set `include_headline` to score the four-system table (no-RAG, Traditional RAG, RAG+verify, Enhanced) instead of the three research pipelines. Product Ask is unchanged.
 
 ### `GET /evaluation/results`
 

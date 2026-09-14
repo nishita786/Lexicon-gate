@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from ...config import Settings, get_settings
-from ...models.documents import Chunk, ChunkMetadata, Document
+from ...models.documents import Chunk, ChunkMetadata, Document, PaperStructure
 from ..citations import title_from_filename
 from ..ingestion.chunker import chunk_page
 from ..ingestion.cleaner import clean_page, strip_repeated_lines
@@ -39,10 +39,12 @@ class DocumentStore:
         self._dir.mkdir(parents=True, exist_ok=True)
         self._documents_path = self._dir / "documents.json"
         self._chunks_path = self._dir / "chunks.json"
+        self._extractions_path = self._dir / "paper_extractions.json"
         self._lock = threading.RLock()
         self._documents: dict[str, Document] = {}
         self._chunks: dict[str, Chunk] = {}
         self._chunks_by_document: dict[str, list[str]] = {}
+        self._extractions: dict[str, PaperStructure] = {}
         self._load()
 
     # ---------------------------------------------------------- persistence
@@ -58,6 +60,12 @@ class DocumentStore:
                 self._chunks = {
                     item["chunk_id"]: Chunk.model_validate(item) for item in payload
                 }
+            if self._extractions_path.exists():
+                payload = json.loads(self._extractions_path.read_text())
+                self._extractions = {
+                    item["document_id"]: PaperStructure.model_validate(item)
+                    for item in payload
+                }
             self._rebuild_document_index()
             if self._documents:
                 logger.info(
@@ -70,6 +78,7 @@ class DocumentStore:
             self._documents = {}
             self._chunks = {}
             self._chunks_by_document = {}
+            self._extractions = {}
 
     def _persist(self) -> None:
         self._documents_path.write_text(
@@ -79,6 +88,12 @@ class DocumentStore:
         self._chunks_path.write_text(
             json.dumps([c.model_dump(mode="json") for c in self._chunks.values()],
                        ensure_ascii=False)
+        )
+        self._extractions_path.write_text(
+            json.dumps(
+                [e.model_dump(mode="json") for e in self._extractions.values()],
+                ensure_ascii=False,
+            )
         )
 
     def _rebuild_document_index(self) -> None:
@@ -181,6 +196,7 @@ class DocumentStore:
             for chunk_id in self._chunks_by_document.pop(document_id, []):
                 self._chunks.pop(chunk_id, None)
             self._documents.pop(document_id, None)
+            self._extractions.pop(document_id, None)
             self._persist()
             return True
 
@@ -217,6 +233,7 @@ class DocumentStore:
             self._documents = {}
             self._chunks = {}
             self._chunks_by_document = {}
+            self._extractions = {}
             self._persist()
 
     # --------------------------------------------------------------- reading
@@ -249,3 +266,22 @@ class DocumentStore:
 
     def document_count(self) -> int:
         return len(self._documents)
+
+    def upsert_extraction(self, record: PaperStructure) -> PaperStructure:
+        with self._lock:
+            self._extractions[record.document_id] = record
+            self._persist()
+            return record
+
+    def get_extraction(self, document_id: str) -> PaperStructure | None:
+        return self._extractions.get(document_id)
+
+    def list_extractions(self) -> list[PaperStructure]:
+        docs = {d.document_id: d for d in self._documents.values()}
+        rows = []
+        for record in self._extractions.values():
+            if record.document_id not in docs:
+                continue
+            rows.append(record)
+        rows.sort(key=lambda r: docs[r.document_id].created_at)
+        return rows

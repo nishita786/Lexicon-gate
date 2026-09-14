@@ -122,7 +122,9 @@ def test_claim_extraction_and_verification():
             1,
         )
     ]
-    result = ClaimVerifier(idf={}).verify(claims, evidence, "What is the advantage of dropout?")
+    result = ClaimVerifier(idf={}).llm_judge_verify(
+        claims, evidence, "What is the advantage of dropout?"
+    )
     statuses = {c.status for c in result.claims}
     assert ClaimStatus.supported in statuses or ClaimStatus.partially_supported in statuses
     assert any(

@@ -88,3 +88,40 @@ class ThemeCluster(BaseModel):
 class ClusterResponse(BaseModel):
     clusters: list[ThemeCluster] = Field(default_factory=list)
     total_documents: int = 0
+
+
+PAPER_STRUCTURE_FIELDS: tuple[str, ...] = (
+    "objective",
+    "method",
+    "dataset",
+    "metric",
+    "result",
+    "limitation",
+)
+
+
+class StructuredField(BaseModel):
+    """One extracted paper attribute, kept even when validation is weak."""
+
+    value: str = ""
+    low_confidence: bool = False
+    nli_label: str | None = None
+    nli_confidence: float | None = None
+    source_chunk_id: str | None = None
+
+
+class PaperStructure(BaseModel):
+    """Per-paper structured record, independent of any user question."""
+
+    document_id: str
+    document_name: str
+    title: str = ""
+    fields: dict[str, StructuredField] = Field(default_factory=dict)
+    extracted_at: datetime = Field(default_factory=_utcnow)
+    extractor: str = ""
+
+
+class PaperStructureListResponse(BaseModel):
+    papers: list[PaperStructure] = Field(default_factory=list)
+    fields: list[str] = Field(default_factory=lambda: list(PAPER_STRUCTURE_FIELDS))
+    total: int = 0

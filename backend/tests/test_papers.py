@@ -229,6 +229,45 @@ def test_mdpi_html_expands_to_pdf_and_is_tried_first():
     assert html not in candidates
 
 
+def test_pmc_html_expands_to_pdf_and_is_tried():
+    html = "https://www.ncbi.nlm.nih.gov/pmc/articles/3037419"
+    pdf = "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3037419/pdf/"
+    assert publisher_pdf_rewrite(html) == pdf
+    assert (
+        publisher_pdf_rewrite("https://pmc.ncbi.nlm.nih.gov/articles/PMC3037419")
+        == "https://pmc.ncbi.nlm.nih.gov/articles/PMC3037419/pdf/"
+    )
+    hit = PaperHit(
+        paper_id="W2103017472",
+        title="Gene Ontology",
+        source="openalex",
+        url=html,
+        doi="10.1038/75556",
+    )
+    candidates = pdf_candidates(hit, get_json=lambda *args, **kwargs: {})
+    assert candidates[0] == pdf
+    assert html not in candidates
+
+
+def test_unpaywall_landing_page_is_rewritten_to_pmc_pdf():
+    html = "https://www.ncbi.nlm.nih.gov/pmc/articles/3037419"
+
+    def get_json(url, params=None, headers=None, timeout=None):
+        if "unpaywall.org" in url:
+            return {"best_oa_location": {"url": html, "url_for_pdf": None}}
+        return {"results": []}
+
+    hit = PaperHit(
+        paper_id="W1",
+        title="Gene Ontology",
+        source="openalex",
+        doi="10.1038/75556",
+    )
+    candidates = pdf_candidates(hit, get_json=get_json)
+    assert "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3037419/pdf/" in candidates
+    assert html not in candidates
+
+
 def test_unpaywall_maps_best_oa_pdf_url():
     def get_json(url, params=None, headers=None, timeout=None):
         assert "unpaywall.org" in url

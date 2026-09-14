@@ -1,8 +1,16 @@
 const BASE = "/api";
 
 async function request(path, options = {}) {
-  const response = await fetch(`${BASE}${path}`, options);
+  const headers = { ...(options.headers || {}) };
+  const response = await fetch(`${BASE}${path}`, {
+    ...options,
+    headers,
+    credentials: "include",
+  });
   if (!response.ok) {
+    if (response.status === 401 && !path.startsWith("/auth")) {
+      window.dispatchEvent(new Event("selfrag-auth-lost"));
+    }
     let detail = response.statusText;
     try {
       const body = await response.json();
@@ -12,13 +20,31 @@ async function request(path, options = {}) {
     }
     throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
   }
-  return response.json();
+  if (response.status === 204) return null;
+  const text = await response.text();
+  return text ? JSON.parse(text) : null;
 }
 
 export const api = {
+  me: () => request("/auth/me"),
+  signup: (payload) =>
+    request("/auth/signup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  login: (payload) =>
+    request("/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  logout: () => request("/auth/logout", { method: "POST" }),
   health: () => request("/health"),
   documents: () => request("/documents"),
   clusters: () => request("/documents/clusters"),
+  extractions: () => request("/documents/extractions"),
+  refreshExtractions: () => request("/documents/extractions/refresh", { method: "POST" }),
   upload: (files) => {
     const data = new FormData();
     for (const file of files) data.append("files", file);
@@ -33,11 +59,6 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
-  checkPlagiarism: (file) => {
-    const data = new FormData();
-    data.append("file", file);
-    return request("/plagiarism/check", { method: "POST", body: data });
-  },
   query: (payload) =>
     request("/query", {
       method: "POST",

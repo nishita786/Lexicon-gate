@@ -8,13 +8,14 @@ for supporting and contradicting spans, then classify the claim as
 * ``UNSUPPORTED``        – no passage covers the claim
 * ``CONTRADICTED``       – a passage asserts the opposite
 
-The classification is lexical + polarity + numeric. It is independent of the
-generator, so a fluent hallucinated lead sentence is caught the same way a
-hosted model hallucination would be.
+The historical classifier is lexical + polarity + numeric (``llm_judge_verify``).
+It remains the baseline/fallback. The default path is a pretrained NLI
+cross-encoder (see ``nli_verifier.verify_claim``), gated by ``use_llm_judge``.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from ..config import Settings, get_settings
@@ -33,6 +34,8 @@ from ..text_utils import (
     stem_set,
     truncate,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -54,6 +57,22 @@ class ClaimVerifier:
     def verify(
         self, claims: list[Claim], evidence: list[EvidenceItem], query: str = ""
     ) -> ClaimVerificationResult:
+        if self.settings.use_llm_judge:
+            return self.llm_judge_verify(claims, evidence, query)
+        try:
+            from .nli_verifier import nli_is_available, nli_verify
+
+            if nli_is_available():
+                return nli_verify(claims, evidence, query, settings=self.settings)
+        except Exception:
+            logger.exception("NLI claim verification failed; using lexical baseline")
+        return self.llm_judge_verify(claims, evidence, query)
+
+    def llm_judge_verify(
+        self, claims: list[Claim], evidence: list[EvidenceItem], query: str = ""
+    ) -> ClaimVerificationResult:
+        """Lexical / heuristic baseline (not an LLM call). Kept as fallback."""
+
         if not claims:
             return ClaimVerificationResult(
                 claims=[],
@@ -144,6 +163,12 @@ class ClaimVerifier:
             [best_citation] if best_citation is not None and best_support >= self.settings.claim_partial_threshold else []
         )
         claim.contradicting_citations = contradicting
+        claim.verifier = "lexical_baseline"
+        if best_citation is not None:
+            for item in evidence:
+                if item.citation_id == best_citation:
+                    claim.source_chunk_id = item.chunk_id
+                    break
 
         if best_contradiction >= self.settings.contradiction_threshold and best_contradiction > best_support:
             claim.status = ClaimStatus.contradicted

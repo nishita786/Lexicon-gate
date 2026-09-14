@@ -75,14 +75,23 @@ class PineconeVectorStore(VectorStore):
             include_metadata=True,
             filter=query_filter,
         )
-        return [
-            VectorMatch(
-                chunk_id=str(match["id"]),
-                score=float(match.get("score", 0.0)),
-                metadata=dict(match.get("metadata") or {}),
+        raw_matches = getattr(result, "matches", None)
+        if raw_matches is None and isinstance(result, dict):
+            raw_matches = result.get("matches", [])
+        matches = []
+        for match in raw_matches or []:
+            if hasattr(match, "id"):
+                chunk_id = str(match.id)
+                score = float(getattr(match, "score", 0.0) or 0.0)
+                metadata = dict(getattr(match, "metadata", None) or {})
+            else:
+                chunk_id = str(match["id"])
+                score = float(match.get("score", 0.0) or 0.0)
+                metadata = dict(match.get("metadata") or {})
+            matches.append(
+                VectorMatch(chunk_id=chunk_id, score=score, metadata=metadata)
             )
-            for match in result.get("matches", [])
-        ]
+        return matches
 
     def delete_document(self, document_id: str) -> int:
         self._index.delete(filter={"document_id": document_id})

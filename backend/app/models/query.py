@@ -12,6 +12,8 @@ class PipelineName(str, Enum):
     traditional = "traditional_rag"
     self_rag = "self_rag"
     enhanced = "enhanced_self_rag"
+    no_rag = "no_rag"
+    rag_verify = "rag_verify"
 
 
 class ClaimStatus(str, Enum):
@@ -121,6 +123,10 @@ class Claim(BaseModel):
     contradicting_citations: list[int] = Field(default_factory=list)
     best_evidence_span: str | None = None
     rationale: str = ""
+    source_chunk_id: str | None = None
+    nli_label: str | None = None
+    nli_confidence: float | None = None
+    verifier: str = ""
 
 
 class ContradictionPair(BaseModel):
@@ -224,6 +230,9 @@ class PaperPlagiarismCheck(BaseModel):
     flags: list[str] = Field(default_factory=list)
     spans: list[FlaggedSentence] = Field(default_factory=list)
     sections: list[SectionOriginality] = Field(default_factory=list)
+    oa_full_texts: int = 0
+    abstracts_compared: int = 0
+    self_matches_skipped: int = 0
 
 
 class TraceEvent(BaseModel):

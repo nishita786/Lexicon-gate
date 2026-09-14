@@ -8,6 +8,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .api.auth import router as auth_router
+from .api.auth_gate import AuthGateMiddleware
 from .api.routes import router
 from .config import get_settings
 from .services.store.knowledge_base import get_knowledge_base
@@ -43,6 +45,8 @@ def create_app() -> FastAPI:
         version="1.0.0",
         lifespan=lifespan,
     )
+    # AuthGate is registered first so CORS (added last) still wraps 401 responses.
+    app.add_middleware(AuthGateMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -50,6 +54,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.include_router(auth_router, prefix="/api")
     app.include_router(router, prefix="/api")
     return app
 

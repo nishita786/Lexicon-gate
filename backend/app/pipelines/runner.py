@@ -19,11 +19,13 @@ from ..generation.prompts import (
     CONFLICT_PREFIX,
     GROUNDED_SYSTEM,
     INSUFFICIENT_ANSWER,
+    UNGROUNDED_SYSTEM,
     UNRELATED_ANSWER,
     answer_prompt,
     conflict_prompt,
     format_evidence,
     revise_prompt,
+    ungrounded_answer_prompt,
 )
 from ..models.query import (
     AnswerStatus,
@@ -47,7 +49,7 @@ from ..verification.confidence import score_confidence
 from ..verification.contradiction import detect_contradictions
 from ..verification.evidence_gate import EvidenceGate, decision_is_unrelated
 from ..verification.hallucination import detect_hallucinations
-from ..verification.plagiarism import check_plagiarism
+from ..text_utils import normalise_query_text, remainder_question_clause
 from .common import (
     TraceRecorder,
     UsageCounter,
@@ -78,6 +80,7 @@ class PipelineConfig:
     self_correction: bool = True
     self_reflection: bool = False  # Standard Self-RAG whole-answer reflection.
     grounded_generation: bool = True
+    skip_retrieval: bool = False
     label: str = ""
 
     def snapshot(self) -> dict[str, object]:
@@ -95,6 +98,7 @@ class PipelineConfig:
             "self_correction": self.self_correction,
             "self_reflection": self.self_reflection,
             "grounded_generation": self.grounded_generation,
+            "skip_retrieval": self.skip_retrieval,
         }
 
 
@@ -147,6 +151,42 @@ def enhanced_config() -> PipelineConfig:
         hallucination_detection=True,
         contradiction_detection=True,
         self_correction=True,
+        self_reflection=False,
+        grounded_generation=True,
+    )
+
+
+def no_rag_config() -> PipelineConfig:
+    return PipelineConfig(
+        name=PipelineName.no_rag,
+        label="Base LLM (no retrieval)",
+        retrieval_decision=False,
+        skip_retrieval=True,
+        evidence_gate=False,
+        adaptive_retrieval=False,
+        query_rewrite=False,
+        claim_verification=False,
+        hallucination_detection=False,
+        contradiction_detection=False,
+        self_correction=False,
+        self_reflection=False,
+        grounded_generation=False,
+    )
+
+
+def verify_only_config() -> PipelineConfig:
+    return PipelineConfig(
+        name=PipelineName.rag_verify,
+        label="RAG + verification (no retry)",
+        retrieval_decision=False,
+        retrieval_mode=RetrievalMode.dense,
+        evidence_gate=False,
+        adaptive_retrieval=False,
+        query_rewrite=False,
+        claim_verification=True,
+        hallucination_detection=True,
+        contradiction_detection=False,
+        self_correction=False,
         self_reflection=False,
         grounded_generation=True,
     )
@@ -243,9 +283,11 @@ class PipelineRunner:
         usage = UsageCounter()
         settings = self.settings
         cfg = self.config
+        original_query = query
+        search_query = normalise_query_text(query)
 
         analysis = analyse_query(
-            query,
+            search_query,
             initial_top_k=settings.initial_top_k,
             max_top_k=settings.max_top_k,
             corpus_is_empty=self.kb.is_empty(),
@@ -261,7 +303,14 @@ class PipelineRunner:
         )
 
         needs_retrieval = analysis.needs_retrieval
-        if cfg.retrieval_decision:
+        if cfg.skip_retrieval:
+            needs_retrieval = False
+            trace.add(
+                "retrieval_decision",
+                "Skipped retrieval (base LLM)",
+                status="skip",
+            )
+        elif cfg.retrieval_decision:
             needs_retrieval = self._retrieval_decision(analysis, usage)
             trace.add(
                 "retrieval_decision",
@@ -274,26 +323,33 @@ class PipelineRunner:
             needs_retrieval = True
             trace.add("retrieval_decision", "Always retrieve (Traditional RAG)")
 
+        if cfg.skip_retrieval:
+            answer, status = self._generate(search_query, [], analysis, [], usage, trace)
+            return self._finalise(
+                query_id, original_query, answer, status,
+                [], [], [], [], trace, usage, t0, analysis, [],
+            )
+
         if not needs_retrieval:
             answer = (
                 "No document retrieval is needed for this request, and no indexed "
                 "evidence was used."
             )
             return self._finalise(
-                query_id, query, answer, AnswerStatus.no_retrieval_needed,
+                query_id, original_query, answer, AnswerStatus.no_retrieval_needed,
                 [], [], [], [], trace, usage, t0, analysis, [],
             )
 
         if self.kb.is_empty():
             return self._finalise(
-                query_id, query, UNRELATED_ANSWER, AnswerStatus.insufficient_evidence,
+                query_id, original_query, UNRELATED_ANSWER, AnswerStatus.insufficient_evidence,
                 [], [], [], [], trace, usage, t0, analysis, [],
                 unrelated_to_sources=True,
                 mismatch_detail="The library is empty, so nothing can support this question.",
             )
 
         current_k = self.controller.initial_top_k(analysis, override=top_k)
-        current_query = query
+        current_query = search_query
         rewritten: list[str] = []
         evidence: list[EvidenceItem] = []
         scored: list[EvidenceItem] = []
@@ -324,7 +380,7 @@ class PipelineRunner:
             if cfg.evidence_gate:
                 remaining = max_attempts - attempt
                 outcome = self.gate.evaluate(
-                    query=query,
+                    query=search_query,
                     evidence=evidence,
                     analysis=analysis,
                     attempt=attempt,
@@ -375,13 +431,13 @@ class PipelineRunner:
                     trace.add(
                         "rewrite",
                         "Query rewritten",
-                        detail=f"{query!r} → {plan.rewrite!r}",
+                        detail=f"{search_query!r} → {plan.rewrite!r}",
                     )
                 current_k = plan.next_top_k
             else:
                 # No gate: score chunks for later diagnostics but accept them all.
                 outcome = self.gate.evaluate(
-                    query=query,
+                    query=search_query,
                     evidence=evidence,
                     analysis=analysis,
                     attempt=attempt,
@@ -398,7 +454,7 @@ class PipelineRunner:
             last_decision = decisions[-1] if decisions else None
             unrelated = decision_is_unrelated(last_decision)
             refuse = UNRELATED_ANSWER if unrelated else INSUFFICIENT_ANSWER
-            mismatch = self._mismatch_detail(query, evidence, last_decision) if unrelated else None
+            mismatch = self._mismatch_detail(original_query, evidence, last_decision) if unrelated else None
             trace.add(
                 "abstain",
                 "Question does not match the indexed files" if unrelated else "Insufficient evidence — refusing to answer",
@@ -406,7 +462,7 @@ class PipelineRunner:
                 detail=refuse,
             )
             return self._finalise(
-                query_id, query, refuse, AnswerStatus.insufficient_evidence,
+                query_id, original_query, refuse, AnswerStatus.insufficient_evidence,
                 evidence, decisions, [], [], trace, usage, t0, analysis, rewritten,
                 unrelated_to_sources=unrelated,
                 mismatch_detail=mismatch,
@@ -423,7 +479,7 @@ class PipelineRunner:
                     detail=contradictions[0].explanation,
                 )
 
-        answer, status = self._generate(query, evidence, analysis, contradictions, usage, trace)
+        answer, status = self._generate(search_query, evidence, analysis, contradictions, usage, trace)
 
         claims: list[Claim] = []
         if cfg.claim_verification or cfg.hallucination_detection:
@@ -443,7 +499,7 @@ class PipelineRunner:
             not in (AnswerStatus.insufficient_evidence, AnswerStatus.no_retrieval_needed)
         ):
             answer, status, claims = self._verify_and_correct(
-                query, evidence, answer, status, claims, usage, trace
+                search_query, evidence, answer, status, claims, usage, trace
             )
 
         if cfg.self_reflection and not cfg.claim_verification:
@@ -479,6 +535,11 @@ class PipelineRunner:
             detail=(
                 f"support={result.support_rate:.2f}, unsupported={result.n_unsupported}, "
                 f"contradicted={result.n_contradicted}"
+                + (
+                    f", verifier={claims[0].verifier}"
+                    if claims and claims[0].verifier
+                    else ""
+                )
             ),
             metrics={"support_rate": result.support_rate},
         )
@@ -568,22 +629,34 @@ class PipelineRunner:
                 "include_lead": False,
                 "max_sentences": 5,
             }
+            system = GROUNDED_SYSTEM if self.config.grounded_generation else None
+        elif self.config.skip_retrieval:
+            prompt = ungrounded_answer_prompt(query)
+            payload_extra = {"include_lead": True, "allow_parametric": True}
+            system = UNGROUNDED_SYSTEM
         else:
             prompt = answer_prompt(query, evidence, analysis)
-            payload_extra = {"include_lead": True}
+            extra_focus = remainder_question_clause(query)
+            payload_extra = {
+                "include_lead": True,
+                "question_type": analysis.question_type,
+                "focus_terms": [extra_focus] if extra_focus else list(analysis.keywords[:6]),
+            }
+            system = GROUNDED_SYSTEM if self.config.grounded_generation else None
 
         response = self._llm(
             LLMTask.answer,
             prompt,
-            GROUNDED_SYSTEM if self.config.grounded_generation else None,
+            system,
             {
                 "query": query,
                 "evidence": evidence_as_dicts(evidence),
+                "keywords": analysis.keywords,
                 **payload_extra,
             },
             usage,
         )
-        answer = (response.structured or {}).get("answer") or response.text
+        answer = _llm_answer_text(response)
         trace.add("generate", "Draft answer generated", metrics={"chars": len(answer)})
         if not answer.strip():
             return INSUFFICIENT_ANSWER, AnswerStatus.insufficient_evidence
@@ -615,7 +688,7 @@ class PipelineRunner:
             },
             usage,
         )
-        answer = (response.structured or {}).get("answer") or response.text
+        answer = _llm_answer_text(response)
         trace.add("generate", "Revised answer generated")
         if not answer.strip():
             return INSUFFICIENT_ANSWER, AnswerStatus.insufficient_evidence
@@ -777,24 +850,7 @@ class PipelineRunner:
                     "coverage": confidence.evidence_coverage,
                 },
             )
-        plagiarism = check_plagiarism(
-            answer,
-            evidence,
-            self.kb.store.all_chunks(),
-            self.settings,
-        )
-        trace.add(
-            "plagiarism",
-            f"Originality {plagiarism.originality:.0%} unique ({plagiarism.risk} overlap risk)",
-            status="warn" if plagiarism.risk != "low" else "ok",
-            detail="; ".join(plagiarism.flags) or None,
-            metrics={
-                "originality": plagiarism.originality,
-                "overlap_ratio": plagiarism.overlap_ratio,
-                "risk": plagiarism.risk,
-                "n_matches": len(plagiarism.matches),
-            },
-        )
+
         if status is AnswerStatus.answered:
             trace.add("final", "Final answer approved")
         elif status is AnswerStatus.conflicting_evidence:
@@ -817,7 +873,6 @@ class PipelineRunner:
             contradictions=contradictions,
             confidence=confidence,
             hallucination=hallucination,
-            plagiarism=plagiarism,
             trace=trace.events,
             metrics=usage.metrics(latency_ms),
             rewritten_queries=rewritten,
@@ -830,3 +885,12 @@ class PipelineRunner:
             unrelated_to_sources=unrelated_to_sources,
             mismatch_detail=mismatch_detail,
         )
+
+
+def _llm_answer_text(response: LLMResponse) -> str:
+    """Use structured answer when present, including empty drafts. Never JSON-dump."""
+
+    structured = response.structured or {}
+    if "answer" in structured:
+        return str(structured.get("answer") or "")
+    return (response.text or "").strip()

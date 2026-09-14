@@ -43,8 +43,11 @@ from ..services.embeddings.base import EmbeddingProvider
 from ..text_utils import (
     clamp,
     content_tokens,
+    definition_subject,
     extract_entities,
     idf_weighted_containment,
+    is_definitional_sentence,
+    is_concept_definition_query,
     numeric_conflict,
     polarity_conflict,
     split_sentences,
@@ -155,6 +158,12 @@ class EvidenceGate:
         if not kept:
             kept = scored[:1]
 
+        has_definitional = None
+        if analysis and (
+            analysis.question_type == "definition" or is_concept_definition_query(query)
+        ):
+            has_definitional = _passages_define_subject(query, kept)
+
         sufficient, action, rationale = self._decide(
             evidence_score=evidence_score,
             max_relevance=max_relevance,
@@ -167,6 +176,7 @@ class EvidenceGate:
             analysis=analysis,
             uncovered=uncovered,
             split_terms=split_terms,
+            has_definitional=has_definitional,
         )
 
         decision = EvidenceGateDecision(
@@ -438,6 +448,7 @@ class EvidenceGate:
         analysis: QueryAnalysis | None,
         uncovered: list[str] | None = None,
         split_terms: list[str] | None = None,
+        has_definitional: bool | None = None,
     ) -> tuple[bool, GateAction, str]:
         settings = self.settings
         min_support = settings.min_supporting_chunks
@@ -453,6 +464,14 @@ class EvidenceGate:
                 + ", ".join(split_terms[:4])
                 + " never co-occur in a single source, so the retrieved set cannot "
                 "support a joint answer.",
+            )
+
+        if has_definitional is False:
+            return (
+                False,
+                fallback,
+                "No definitional passage for the query subject; "
+                "abstaining rather than answering from application papers.",
             )
 
         distinctive_uncovered = [
@@ -532,11 +551,31 @@ class EvidenceGate:
             )
 
         if n_relevant < min_support:
+            if attempts_remaining > 0 and n_candidates > n_relevant:
+                return (
+                    False,
+                    "expand",
+                    f"Only {n_relevant} passage(s) cleared the relevance floor "
+                    f"({settings.chunk_relevance_floor:.2f}); increasing retrieval depth.",
+                )
+            if evidence_score >= self.threshold and n_relevant >= 1:
+                return (
+                    True,
+                    "proceed",
+                    f"Evidence score {evidence_score:.2f} ≥ threshold {self.threshold:.2f} "
+                    f"with {n_relevant} relevant passage(s) and no further unique hits; "
+                    f"proceeding to generation.",
+                )
             return (
                 False,
-                "expand",
+                fallback,
                 f"Only {n_relevant} passage(s) cleared the relevance floor "
-                f"({settings.chunk_relevance_floor:.2f}); increasing retrieval depth.",
+                f"({settings.chunk_relevance_floor:.2f}); increasing retrieval depth."
+                if attempts_remaining > 0
+                else (
+                    f"Only {n_relevant} passage(s) cleared the relevance floor "
+                    f"after exhausting retrieval attempts."
+                ),
             )
 
         return (
@@ -555,10 +594,25 @@ def decision_is_unrelated(decision: EvidenceGateDecision | None) -> bool:
     rationale = (decision.rationale or "").lower()
     if "absent from the corpus" in rationale or "never co-occur" in rationale:
         return True
+    if "definitional passage" in rationale:
+        return True
     if decision.max_relevance < 0.3:
         return True
     if decision.uncovered_terms and decision.evidence_score < 0.35:
         return True
+    return False
+
+
+def _passages_define_subject(query: str, items: Sequence[EvidenceItem]) -> bool:
+    subject_stems = stem_set(definition_subject(query))
+    if not subject_stems:
+        return True
+    for item in items:
+        if is_definitional_sentence(item.text, subject_stems):
+            return True
+        for sentence in split_sentences(item.text, min_chars=12):
+            if is_definitional_sentence(sentence, subject_stems):
+                return True
     return False
 
 

@@ -97,3 +97,129 @@ def test_uploaded_paper_spans_and_sections(settings, monkeypatch):
     assert report.sections
     titles = [row.title.lower() for row in report.sections]
     assert any("method" in title for title in titles)
+
+
+def test_uploaded_pdf_is_scored_against_vector_index(kb, settings):
+    from app.services.ingestion.loaders import LoadedPage
+    from app.verification.plagiarism import score_uploaded_against_store
+
+    kb.ingest_pages(
+        "handbook.md",
+        [LoadedPage(page=1, text=f"Handbook\n\n{LONG_SOURCE}")],
+        title="Handbook",
+    )
+    report = score_uploaded_against_store(
+        "draft.pdf",
+        [LoadedPage(page=1, text=f"Class notes. {LONG_SOURCE}")],
+        kb,
+        settings=settings,
+    )
+    assert report.library_empty is False
+    assert report.similarity > 0
+    assert report.originality < 1
+    assert report.sources
+    assert "handbook" in report.sources[0].document_name.lower()
+
+
+def test_uploaded_paper_skips_same_title_in_index(settings, monkeypatch):
+    from app.models.papers import PaperHit
+    from app.services.ingestion.loaders import LoadedPage
+    from app.verification.plagiarism import score_uploaded_paper
+
+    def fake_search(query, limit=10, **kwargs):
+        return (
+            [
+                PaperHit(
+                    paper_id="self-1",
+                    title="Dropout randomly disables units in a neural network",
+                    abstract=LONG_SOURCE,
+                    source="semantic_scholar",
+                )
+            ],
+            "semantic_scholar",
+        )
+
+    monkeypatch.setattr("app.verification.plagiarism.search_papers", fake_search)
+    monkeypatch.setattr("app.verification.plagiarism._fetch_oa_pages", lambda *a, **k: [])
+    text = (
+        "Dropout randomly disables units in a neural network\n\n"
+        f"{LONG_SOURCE}\n"
+    )
+    report = score_uploaded_paper(
+        "dropout.md",
+        [LoadedPage(page=1, text=text)],
+        [],
+        settings=settings,
+    )
+    assert report.self_matches_skipped >= 1
+    assert report.similarity == 0
+    assert report.sources == []
+
+
+def test_uploaded_paper_uses_oa_pdf_body(settings, monkeypatch):
+    from app.models.papers import PaperHit
+    from app.services.ingestion.loaders import LoadedPage
+    from app.verification.plagiarism import score_uploaded_paper
+
+    def fake_search(query, limit=10, **kwargs):
+        return (
+            [
+                PaperHit(
+                    paper_id="other-1",
+                    title="A different study of regularisation tricks",
+                    abstract="Short abstract without the copied paragraph.",
+                    source="semantic_scholar",
+                    pdf_url="https://example.org/paper.pdf",
+                )
+            ],
+            "semantic_scholar",
+        )
+
+    monkeypatch.setattr("app.verification.plagiarism.search_papers", fake_search)
+    monkeypatch.setattr(
+        "app.verification.plagiarism._fetch_oa_pages",
+        lambda *a, **k: [LoadedPage(page=3, text=LONG_SOURCE)],
+    )
+    copied = (
+        "Notes on another topic in vision.\n\n"
+        f"{LONG_SOURCE}\n"
+    )
+    report = score_uploaded_paper(
+        "notes.md",
+        [LoadedPage(page=1, text=copied)],
+        [],
+        settings=settings,
+    )
+    assert report.oa_full_texts == 1
+    assert report.similarity > 0
+    assert report.sources
+    assert report.sources[0].origin == "academic"
+
+
+def test_references_are_not_scored(settings, monkeypatch):
+    from app.services.ingestion.loaders import LoadedPage
+    from app.verification.plagiarism import score_uploaded_paper
+
+    monkeypatch.setattr("app.verification.plagiarism.search_papers", lambda *a, **k: ([], "none"))
+    body = "\n".join(
+        [
+            "Original remarks about soil chemistry and garden pH for homework.",
+            "Further original sentences about watering schedules and compost bins.",
+            "Still more original wording so the references heading is late enough.",
+            "Another original paragraph about sunlight hours in winter gardens.",
+            "Keep adding original text so bibliography sits in the last half.",
+            "This section stays unique and should not match the handbook copy.",
+            "Closing original notes about mulch layers and frost dates.",
+            "Final original sentence before the bibliography heading appears.",
+            "References",
+            LONG_SOURCE,
+        ]
+    )
+    report = score_uploaded_paper(
+        "essay.md",
+        [LoadedPage(page=1, text=body)],
+        [_chunk("handbook", LONG_SOURCE)],
+        settings=settings,
+    )
+    assert report.similarity == 0
+    assert any("references" in flag.lower() or "bibliography" in flag.lower() for flag in report.flags)

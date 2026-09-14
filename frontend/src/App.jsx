@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, ms, pct } from "./api";
+import AuthScreen, { Logo } from "./Auth";
 
 const NAV = [
   ["ask", "Ask"],
   ["find", "Find papers"],
   ["library", "Library"],
-  ["plagiarism", "Plagiarism"],
+  ["compare", "Compare"],
 ];
 
 const STATUS_COPY = {
@@ -16,14 +17,15 @@ const STATUS_COPY = {
   NO_RETRIEVAL_NEEDED: { label: "No documents needed", tone: "" },
 };
 
-const CLAIM_TONE = {
-  SUPPORTED: "good",
-  PARTIALLY_SUPPORTED: "warn",
-  UNSUPPORTED: "bad",
-  CONTRADICTED: "bad",
+const CLAIM_META = {
+  SUPPORTED: { label: "supported", tone: "neutral" },
+  PARTIALLY_SUPPORTED: { label: "insufficient evidence", tone: "warn" },
+  UNSUPPORTED: { label: "unsupported", tone: "warn" },
+  CONTRADICTED: { label: "contradicted", tone: "warn" },
 };
 
 export default function App() {
+  const [session, setSession] = useState(undefined);
   const [page, setPage] = useState("ask");
   const [health, setHealth] = useState(null);
   const [docs, setDocs] = useState([]);
@@ -31,8 +33,22 @@ export default function App() {
   const [selectedEvidence, setSelectedEvidence] = useState(null);
   const [history, setHistory] = useState([]);
   const [askScope, setAskScope] = useState(null);
+  const navRef = useRef(null);
+
+  useEffect(() => {
+    api.me().then(setSession).catch(() => setSession(null));
+  }, []);
+
+  useEffect(() => {
+    function onLost() {
+      setSession(null);
+    }
+    window.addEventListener("selfrag-auth-lost", onLost);
+    return () => window.removeEventListener("selfrag-auth-lost", onLost);
+  }, []);
 
   const refresh = useCallback(async () => {
+    if (!session) return;
     try {
       const [h, d, recent] = await Promise.all([
         api.health(),
@@ -45,59 +61,127 @@ export default function App() {
     } catch (err) {
       console.warn(err);
     }
-  }, []);
+  }, [session]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
 
+  async function logout() {
+    try {
+      await api.logout();
+    } catch {
+      /* still leave the session locally */
+    }
+    setSession(null);
+    setDocs([]);
+    setLastResult(null);
+    setHistory([]);
+    setPage("ask");
+  }
+
+  const navIndex = Math.max(0, NAV.findIndex(([id]) => id === page));
+
+  useLayoutEffect(() => {
+    const nav = navRef.current;
+    if (!nav) return;
+    function place() {
+      const btn = nav.querySelector("button.active");
+      if (!btn) return;
+      nav.style.setProperty("--thumb-x", `${btn.offsetLeft}px`);
+      nav.style.setProperty("--thumb-w", `${btn.offsetWidth}px`);
+      nav.style.setProperty("--thumb-y", `${btn.offsetTop}px`);
+      nav.style.setProperty("--thumb-h", `${btn.offsetHeight}px`);
+    }
+    place();
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
+  }, [page, session]);
+
+  if (session === undefined) {
+    return (
+      <div className="auth-screen session-splash">
+        <div className="auth-orbs" aria-hidden="true">
+          <span className="orb orb-violet" />
+          <span className="orb orb-magenta" />
+          <span className="orb orb-orange" />
+        </div>
+        <Logo size="hero" />
+        <p className="muted">Opening the gate…</p>
+      </div>
+    );
+  }
+
+  if (!session) {
+    return <AuthScreen onSignedIn={setSession} />;
+  }
+
   return (
     <div className="app">
-      <header className="topbar">
+      <a className="skip-link" href="#main">
+        Skip to content
+      </a>
+      <aside className="sidebar">
         <div className="brand">
-          <h1>Enhanced Self-RAG</h1>
+          <Logo size="nav" />
           <p>Question, evidence, verified answer.</p>
         </div>
-        <nav>
+        <nav ref={navRef} data-active={page} data-index={navIndex} aria-label="Primary">
+          <span className="nav-thumb" aria-hidden="true" />
           {NAV.map(([id, label]) => (
-            <button key={id} className={page === id ? "active" : ""} onClick={() => setPage(id)}>
+            <button
+              key={id}
+              type="button"
+              className={page === id ? "active" : ""}
+              onClick={() => setPage(id)}
+            >
               {label}
             </button>
           ))}
         </nav>
-        <div className="topbar-meta">
-          {health
-            ? `${docs.length} source${docs.length === 1 ? "" : "s"} · ${health.knowledge_base?.chunks ?? 0} passages`
-            : "Connecting to API…"}
+        <div className="sidebar-foot">
+          <span className="topbar-user">{session.name || session.email}</span>
+          <button type="button" className="ghost" onClick={logout}>
+            Log out
+          </button>
         </div>
-      </header>
-      <main className="main">
-        {page === "ask" && (
-          <Ask
-            docs={docs}
-            result={lastResult}
-            setResult={setLastResult}
-            selected={selectedEvidence}
-            setSelected={setSelectedEvidence}
-            history={history}
-            onQueried={refresh}
-            askScope={askScope}
-            onClearScope={() => setAskScope(null)}
-          />
-        )}
-        {page === "find" && <FindPapers onImported={refresh} />}
-        {page === "library" && (
-          <Library
-            docs={docs}
-            onChange={refresh}
-            onAskTheme={(scope) => {
-              setAskScope(scope);
-              setPage("ask");
-            }}
-          />
-        )}
-        {page === "plagiarism" && <PlagiarismCheck docs={docs} />}
-      </main>
+      </aside>
+      <div className="workspace">
+        <header className="workspace-bar">
+          <span>
+            {health
+              ? `${docs.length} source${docs.length === 1 ? "" : "s"} · ${health.knowledge_base?.chunks ?? 0} passages`
+              : "Connecting to API…"}
+          </span>
+        </header>
+        <main className="main" id="main" data-page={page} key={page}>
+          {page === "ask" && (
+            <Ask
+              docs={docs}
+              result={lastResult}
+              setResult={setLastResult}
+              selected={selectedEvidence}
+              setSelected={setSelectedEvidence}
+              history={history}
+              onQueried={refresh}
+              askScope={askScope}
+              onClearScope={() => setAskScope(null)}
+            />
+          )}
+          {page === "find" && <FindPapers onImported={refresh} />}
+          {page === "library" && (
+            <Library
+              docs={docs}
+              onChange={refresh}
+              onAskTheme={(scope) => {
+                setAskScope(scope);
+                setPage("ask");
+              }}
+            />
+          )}
+          {page === "compare" && <ComparePapers docs={docs} />}
+        </main>
+      </div>
     </div>
   );
 }
@@ -135,9 +219,12 @@ function Ask({ docs, result, setResult, selected, setSelected, history, onQuerie
     <div className={`ask-workspace ${result ? "has-result" : ""}`}>
       <div className="ask-col ask-col-query">
         {emptyLibrary && (
-          <div className="card banner" style={{ marginBottom: 16 }}>
-            Upload sources first. Open <strong>Find papers</strong> to search academic indexes,
-            or <strong>Library</strong> to upload your own files.
+          <div className="spotlight spotlight-violet">
+            <p className="spotlight-kicker">Start here</p>
+            <p>
+              Upload sources first. Open Find papers to search academic indexes, or Library
+              to upload your own files.
+            </p>
           </div>
         )}
         <div className="card">
@@ -164,7 +251,11 @@ function Ask({ docs, result, setResult, selected, setSelected, history, onQuerie
             }}
           />
           <div className="row" style={{ marginTop: 10 }}>
-            <button className="primary" disabled={busy || emptyLibrary || !query.trim()} onClick={() => ask()}>
+            <button
+              className={`primary${busy ? " is-busy" : ""}`}
+              disabled={busy || emptyLibrary || !query.trim()}
+              onClick={() => ask()}
+            >
               {busy ? "Checking sources…" : "Ask"}
             </button>
             {error && <span className="error">{error}</span>}
@@ -172,11 +263,6 @@ function Ask({ docs, result, setResult, selected, setSelected, history, onQuerie
           {badge && (
             <div className="verify-block">
               <span className={`flag ${badge.tone}`}>{badge.label}</span>
-              {result.plagiarism && (
-                <span className={`flag ${plagiarismTone(result.plagiarism.risk)}`}>
-                  Originality {Math.round((result.plagiarism.originality ?? 1) * 100)}% unique
-                </span>
-              )}
               {result.status === "CONFLICTING_EVIDENCE" && (
                 <p className="status" style={{ margin: "8px 0 0" }}>Sources disagree. Both views are in the answer.</p>
               )}
@@ -285,6 +371,10 @@ function FindPapers({ onImported }) {
           <p>Search academic indexes. Rate limits are retried automatically. Add a paper to Library, then Ask.</p>
         </div>
       </div>
+      <div className="spotlight spotlight-orange">
+        <p className="spotlight-kicker">Academic search</p>
+        <p>Drop a title, topic, or author. Add open copies into the library, then ask against your own sources.</p>
+      </div>
       <form className="card" style={{ marginBottom: 16 }} onSubmit={search}>
         <input
           value={query}
@@ -292,7 +382,7 @@ function FindPapers({ onImported }) {
           placeholder="Paper title, topic, or author…"
         />
         <div className="row" style={{ marginTop: 10 }}>
-          <button className="primary" type="submit" disabled={busy || !query.trim()}>
+          <button className={`primary${busy ? " is-busy" : ""}`} type="submit" disabled={busy || !query.trim()}>
             {busy ? "Searching…" : "Search"}
           </button>
           {results?.provider && <span className="status">Results from {results.provider.replaceAll("_", " ")}</span>}
@@ -398,10 +488,14 @@ function Library({ docs, onChange, onAskTheme }) {
           <h2>Library</h2>
           <p>Sources Ask can use. Add papers from Find papers, or upload files here. Citation metadata comes from the paper record or the file name.</p>
         </div>
-        <label className="primary upload-btn">
+        <label className={`primary upload-btn${busy ? " is-busy" : ""}`}>
           {busy ? "Indexing…" : "Upload files"}
           <input type="file" multiple hidden disabled={busy} onChange={onUpload} />
         </label>
+      </div>
+      <div className="spotlight spotlight-violet">
+        <p className="spotlight-kicker">Your sources</p>
+        <p>Everything Ask retrieves from lives here — imported papers and files you upload.</p>
       </div>
       {error && <p className="error">{error}</p>}
       {message && <p className="status">{message}</p>}
@@ -495,19 +589,33 @@ function Library({ docs, onChange, onAskTheme }) {
   );
 }
 
-function PlagiarismCheck({ docs }) {
-  const [file, setFile] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [report, setReport] = useState(null);
+const STRUCTURE_COLUMNS = ["objective", "method", "dataset", "metric", "result", "limitation"];
 
-  async function check() {
-    if (!file) return;
+function ComparePapers({ docs }) {
+  const [rows, setRows] = useState([]);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const payload = await api.extractions();
+      setRows(payload.papers || []);
+      setError("");
+    } catch (err) {
+      setError(err.message);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load, docs]);
+
+  async function refreshAll() {
     setBusy(true);
     setError("");
     try {
-      const payload = await api.checkPlagiarism(file);
-      setReport(payload);
+      const payload = await api.refreshExtractions();
+      setRows(payload.papers || []);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -519,178 +627,77 @@ function PlagiarismCheck({ docs }) {
     <>
       <div className="page-title">
         <div>
-          <h2>Plagiarism</h2>
-          <p>Upload a paper to score against your Library and academic indexes. The file is parsed, not added to the index.</p>
+          <h2>Compare papers</h2>
+          <p>
+            Structured fields extracted once when a paper is added. Low-confidence cells stay visible and are marked.
+          </p>
         </div>
-      </div>
-      <div className="card plag-upload">
-        <label className="ghost upload-btn">
-          {file ? file.name : "Choose PDF, Word, or text"}
-          <input
-            type="file"
-            hidden
-            accept=".pdf,.docx,.txt,.md,.markdown,.html,.htm,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            disabled={busy}
-            onChange={(event) => {
-              setFile(event.target.files?.[0] || null);
-              setReport(null);
-            }}
-          />
-        </label>
-        <button className="primary" type="button" disabled={busy || !file} onClick={check}>
-          {busy ? "Checking…" : "Check plagiarism"}
+        <button className="ghost" type="button" disabled={busy || !docs.length} onClick={refreshAll}>
+          {busy ? "Extracting…" : "Re-extract library"}
         </button>
-        {error && <span className="error">{error}</span>}
       </div>
-      <p className="status plag-disclaimer">
-        Checked against your Library and academic indexes (title and abstract), not the full open web.
-        {docs.length === 0
-          ? " Your Library is empty; indexes can still match titles and abstracts."
-          : ""}
-      </p>
-      {report && <PlagiarismReportView report={report} />}
+      <div className="spotlight spotlight-magenta">
+        <p className="spotlight-kicker">Side by side</p>
+        <p>Objective, method, dataset, metric, result, limitation — extracted once per paper, kept even when confidence is low.</p>
+      </div>
+      {error && <p className="error">{error}</p>}
+      {!docs.length && (
+        <div className="card">
+          <h3>No sources yet</h3>
+          <p className="status">Add papers in Library or Find papers. Comparison uses stored records, not a question.</p>
+        </div>
+      )}
+      {docs.length > 0 && (
+        <div className="card compare-wrap">
+          <table className="compare-papers">
+            <thead>
+              <tr>
+                <th>Paper</th>
+                {STRUCTURE_COLUMNS.map((col) => (
+                  <th key={col}>{col}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {docs.map((doc) => {
+                const record = rows.find((row) => row.document_id === doc.document_id);
+                return (
+                  <tr key={doc.document_id}>
+                    <td>
+                      <strong>{doc.title || doc.name}</strong>
+                      <div className="status" style={{ margin: 0 }}>
+                        {(doc.authors || []).slice(0, 4).join(", ") || "Unknown author"}
+                        {doc.year ? ` · ${doc.year}` : ""}
+                      </div>
+                    </td>
+                    {STRUCTURE_COLUMNS.map((col) => {
+                      const field = record?.fields?.[col];
+                      const value = (field?.value || "").trim();
+                      const missing = !value;
+                      const low = Boolean(value && field?.low_confidence);
+                      return (
+                        <td key={col} className={missing || low ? "field-low" : ""}>
+                          <span>{value || "—"}</span>
+                          {low && (
+                            <span className="flag warn low-flag" title="Extracted, but not clearly supported by this paper's passages">
+                              Low
+                            </span>
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <p className="status" style={{ marginBottom: 0 }}>
+            Empty cells mean that field was not found in the paper. A Low tag means a value was extracted but failed a support check — it is still shown.
+          </p>
+        </div>
+      )}
     </>
   );
-}
-
-function PlagiarismReportView({ report }) {
-  const plagiarismPct = Math.round((report.similarity ?? 0) * 100);
-  const originalityPct = Math.round((report.originality ?? 1) * 100);
-  const spans = report.spans?.length ? report.spans : report.flagged_sentences || [];
-  return (
-    <div className="plag-report">
-      <div className="grid two plag-scores">
-        <div className="card plag-score">
-          <h3>Plagiarism</h3>
-          <strong className={plagiarismTone(report.risk)}>{plagiarismPct}%</strong>
-          <p className="status">Overlapping wording vs Library and academic indexes</p>
-        </div>
-        <div className="card plag-score">
-          <h3>Originality</h3>
-          <strong className="good">{originalityPct}%</strong>
-          <p className="status">unique</p>
-        </div>
-      </div>
-      <div className="row" style={{ marginTop: 8 }}>
-        <button type="button" className="ghost" onClick={() => exportOriginalityReport(report)}>
-          Export report
-        </button>
-      </div>
-      <p className="status">
-        {report.filename} · {report.n_words} words
-        {report.n_pages ? ` · ${report.n_pages} page${report.n_pages === 1 ? "" : "s"}` : ""}
-        {report.risk ? ` · ${report.risk} risk` : ""}
-      </p>
-      {(report.flags || []).length > 0 && (
-        <p className="status">{report.flags.join(" ")}</p>
-      )}
-      <div className="card" style={{ marginTop: 16 }}>
-        <h3>Matching sources</h3>
-        {(report.sources || []).length === 0 ? (
-          <p className="status" style={{ marginTop: 0 }}>
-            {report.library_empty
-              ? "No Library papers and no overlapping academic abstracts."
-              : "No long overlapping passages were found."}
-          </p>
-        ) : (
-          <ul className="plain-list plag-sources">
-            {report.sources.map((source) => {
-              const href = paperHref(source);
-              return (
-                <li key={source.document_id}>
-                  <span className="plag-source-main">
-                    <span className={`flag ${source.origin === "academic" ? "warn" : "good"}`}>
-                      {source.origin === "academic" ? "Academic" : "Library"}
-                    </span>
-                    <span>{source.document_name}</span>
-                    {href && (
-                      <a className="ghost" href={href} target="_blank" rel="noreferrer">
-                        Open paper
-                      </a>
-                    )}
-                  </span>
-                  <strong>{Math.round((source.share ?? 0) * 100)}%</strong>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </div>
-      {(report.sections || []).length > 0 && (
-        <div className="card" style={{ marginTop: 16 }}>
-          <h3>Section originality</h3>
-          <ul className="plain-list plag-sources">
-            {report.sections.map((section) => (
-              <li key={section.title}>
-                <span>{section.title}</span>
-                <strong>{Math.round((section.originality ?? 1) * 100)}% unique</strong>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {spans.length > 0 && (
-        <div className="card" style={{ marginTop: 16 }}>
-          <h3>Originality view</h3>
-          <p className="status plag-legend" style={{ marginTop: 0 }}>
-            <span className="kind-original">Original</span>
-            <span className="kind-paraphrased">Paraphrased</span>
-            <span className="kind-verbatim">Verbatim uncited</span>
-          </p>
-          <div className="orig-view">
-            {spans.map((span, index) => (
-              <p key={`${span.kind}-${index}`} className={`orig-span kind-${span.kind || "verbatim"}`}>
-                {span.text}
-              </p>
-            ))}
-          </div>
-        </div>
-      )}
-      {(report.flagged_sentences || []).length > 0 && (
-        <details className="card flagged-block" style={{ marginTop: 16 }} open>
-          <summary>Areas of correction ({report.flagged_sentences.length})</summary>
-          <ul className="plain-list flagged-list">
-            {report.flagged_sentences.map((row, index) => (
-              <li key={`${row.text}-${index}`}>
-                <p className={`flagged-sentence kind-${row.kind || "verbatim"}`}>{row.text}</p>
-                {row.kind && row.kind !== "original" && (
-                  <span className={`flag ${row.kind === "verbatim" ? "bad" : "warn"}`}>
-                    {row.kind === "verbatim" ? "Verbatim uncited" : "Paraphrased"}
-                  </span>
-                )}
-                <ul className="plain-list correction-hints">
-                  {correctionHints(row).map((hint) => (
-                    <li key={hint}>{hint}</li>
-                  ))}
-                </ul>
-              </li>
-            ))}
-          </ul>
-        </details>
-      )}
-    </div>
-  );
-}
-
-function plagiarismTone(risk) {
-  if (risk === "high") return "bad";
-  if (risk === "medium") return "warn";
-  return "good";
-}
-
-function correctionHints(row) {
-  if (row.corrections?.length) return row.corrections;
-  const lines = ["Reword this passage so it is not a long verbatim copy."];
-  const seen = new Set();
-  for (const match of row.matches || []) {
-    const name = match.document_name || match.document_id || "this source";
-    const page = match.page != null ? `, p. ${match.page}` : "";
-    const line = `Cite ${name}${page}.`;
-    if (seen.has(line)) continue;
-    seen.add(line);
-    lines.push(line);
-  }
-  return lines;
 }
 
 function verificationBadge(result) {
@@ -728,12 +735,136 @@ function exportText(result) {
   return cites ? `${result.answer}\n\n${cites}` : result.answer || "";
 }
 
+function claimMeta(claim) {
+  const nli = String(claim?.nli_label || "").toLowerCase();
+  if (nli === "supported") return CLAIM_META.SUPPORTED;
+  if (nli === "contradicted") return CLAIM_META.CONTRADICTED;
+  if (nli === "unsupported") {
+    if (claim?.status === "PARTIALLY_SUPPORTED") return CLAIM_META.PARTIALLY_SUPPORTED;
+    return CLAIM_META.UNSUPPORTED;
+  }
+  return CLAIM_META[claim?.status] || CLAIM_META.UNSUPPORTED;
+}
+
+function claimConfidence(claim) {
+  if (claim?.nli_confidence != null && Number.isFinite(Number(claim.nli_confidence))) {
+    return Number(claim.nli_confidence);
+  }
+  if (claim?.support_score != null && Number.isFinite(Number(claim.support_score))) {
+    return Number(claim.support_score);
+  }
+  return null;
+}
+
+function sourceForClaim(claim, evidence) {
+  const items = evidence || [];
+  if (claim?.source_chunk_id) {
+    const hit = items.find((item) => item.chunk_id === claim.source_chunk_id);
+    if (hit) return hit;
+  }
+  const cite = claim?.supporting_citations?.[0] ?? claim?.contradicting_citations?.[0];
+  if (cite != null) {
+    return items.find((item) => item.citation_id === cite) || null;
+  }
+  return null;
+}
+
+function sourceHoverLabel(source, span) {
+  if (!source) return "No source chunk tied to this claim";
+  const heading = `[${source.citation_id}] ${source.title || source.document_name}`;
+  const page = source.page != null ? ` · p. ${source.page}` : "";
+  const body = span || source.text || "";
+  return `${heading}${page}\n${body}`;
+}
+
+function looksLikeDumpedJson(text) {
+  const trimmed = String(text || "").trim();
+  return trimmed.startsWith("{") && trimmed.includes('"answer"');
+}
+
+function visibleClaims(result) {
+  return (result.claims || []).filter((claim) => !looksLikeDumpedJson(claim.text));
+}
+
+function shouldHideClaims(result) {
+  const claims = visibleClaims(result);
+  if (!claims.length) return true;
+  if (looksLikeDumpedJson(result.answer)) return true;
+  if (
+    result.status === "INSUFFICIENT_EVIDENCE" &&
+    claims.every((claim) => looksLikeDumpedJson(claim.text))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function ClaimCard({
+  text,
+  label,
+  tone,
+  confidence,
+  source,
+  span,
+  onSelectSource,
+  onCite,
+  highlights = [],
+}) {
+  const [open, setOpen] = useState(false);
+  const hover = sourceHoverLabel(source, span);
+
+  return (
+    <article className={`claim claim-card ${tone || ""}`}>
+      <div className="claim-head">
+        <span className={`flag ${tone || ""}`}>{label}</span>
+        {confidence != null && (
+          <span className="claim-conf" title="Verification confidence">
+            {pct(confidence)}
+          </span>
+        )}
+      </div>
+      <div className="claim-text">
+        {onCite ? (
+          <AnswerText text={text} onCite={onCite} highlights={highlights} />
+        ) : (
+          text
+        )}
+      </div>
+      <button
+        type="button"
+        className="claim-source-toggle"
+        title={hover}
+        onClick={() => {
+          setOpen((value) => !value);
+          if (source) onSelectSource?.(source);
+        }}
+      >
+        {source ? `Source [${source.citation_id}]` : "No source chunk"}
+      </button>
+      {open && (
+        <div className="claim-source">
+          {source ? (
+            <>
+              <div className="cite">
+                [{source.citation_id}] {source.title || source.document_name}
+                {source.page != null ? ` · p. ${source.page}` : ""}
+                {source.chunk_id ? ` · ${source.chunk_id}` : ""}
+              </div>
+              <p>{span || source.text}</p>
+            </>
+          ) : (
+            <p className="status">No retrieved chunk is tied to this claim.</p>
+          )}
+        </div>
+      )}
+    </article>
+  );
+}
+
 function AnswerView({ result, docs, selected, onSelect }) {
   const conf = result.confidence || {};
   const lastGate = (result.gate_decisions || []).at(-1);
   const [copied, setCopied] = useState("");
-  const [showFlagged, setShowFlagged] = useState(false);
-  const plag = result.plagiarism || {};
   const evidenceByCite = useMemo(() => {
     const map = new Map();
     for (const item of result.evidence || []) map.set(item.citation_id, item);
@@ -775,18 +906,42 @@ function AnswerView({ result, docs, selected, onSelect }) {
               This question is not covered by your files.
             </p>
           )}
-          {!result.unrelated_to_sources && result.status === "INSUFFICIENT_EVIDENCE" && (
+          {!result.unrelated_to_sources &&
+            (result.status === "INSUFFICIENT_EVIDENCE" || looksLikeDumpedJson(result.answer)) && (
             <p className="status" style={{ marginTop: 0 }}>
               The indexed files do not contain enough support for a reliable answer.
             </p>
           )}
-          <div className="answer">
-            <AnswerText
-              text={result.answer}
-              onCite={selectCite}
-              highlights={showFlagged ? (plag.matches || []).map((m) => m.text) : []}
-            />
-          </div>
+          {(result.claims || []).length > 0 && !shouldHideClaims(result) ? (
+            <ul className="claim-list answer-claims">
+              {visibleClaims(result).map((claim) => {
+                const meta = claimMeta(claim);
+                return (
+                  <li key={claim.claim_id}>
+                    <ClaimCard
+                      text={claim.text}
+                      label={meta.label}
+                      tone={meta.tone}
+                      confidence={claimConfidence(claim)}
+                      source={sourceForClaim(claim, result.evidence)}
+                      span={claim.best_evidence_span}
+                      onSelectSource={(item) => item && onSelect(item)}
+                      onCite={selectCite}
+                    />
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <div className="answer">
+              {!looksLikeDumpedJson(result.answer) && (
+                <AnswerText
+                  text={result.answer}
+                  onCite={selectCite}
+                />
+              )}
+            </div>
+          )}
           <div className="export-bar">
             <button type="button" className="ghost" onClick={copyAnswer}>
               {copied === "copy" ? "Copied" : "Copy"}
@@ -796,41 +951,40 @@ function AnswerView({ result, docs, selected, onSelect }) {
             </button>
             {copied === "failed" && <span className="error">Copy failed</span>}
           </div>
-          {(plag.flagged_sentences || []).length > 0 && (
-            <details
-              className="flagged-block"
-              onToggle={(event) => setShowFlagged(event.target.open)}
-            >
-              <summary>View flagged sentences ({plag.flagged_sentences.length})</summary>
-              <ul className="plain-list flagged-list">
-                {plag.flagged_sentences.map((row, index) => (
-                  <li key={`${row.text}-${index}`}>
-                    <p className="flagged-sentence">{row.text}</p>
-                    {(row.matches || []).map((match, mIndex) => (
-                      <button
-                        key={`${match.document_id}-${mIndex}`}
-                        type="button"
-                        className="flagged-source"
-                        onClick={() => {
-                          const item = (result.evidence || []).find(
-                            (ev) => ev.document_id === match.document_id,
-                          );
-                          if (item) onSelect(item);
-                        }}
-                      >
-                        <span className={`flag ${match.cited ? "good" : "bad"}`}>
-                          {match.cited ? "Cited" : "Uncited"}
-                        </span>
-                        {match.document_name}
-                        {match.page != null ? ` · p. ${match.page}` : ""}
-                      </button>
-                    ))}
-                  </li>
-                ))}
-              </ul>
-            </details>
-          )}
         </div>
+        {contradictions.length > 0 && (
+          <div className="card conflict-panel">
+            <h3>Conflicting Evidence</h3>
+            <p className="status" style={{ marginTop: 0 }}>
+              Sources disagree. Both sides stay visible.
+            </p>
+            <ul className="claim-list">
+              {contradictions.map((pair, index) => (
+                <li key={`${pair.citation_a}-${pair.citation_b}-${index}`}>
+                  <div className="conflict-pair">
+                    <ClaimCard
+                      text={pair.claim_a}
+                      label="contradicted"
+                      tone="warn"
+                      source={evidenceByCite.get(pair.citation_a)}
+                      onSelectSource={(item) => item && onSelect(item)}
+                      onCite={selectCite}
+                    />
+                    <ClaimCard
+                      text={pair.claim_b}
+                      label="contradicted"
+                      tone="warn"
+                      source={evidenceByCite.get(pair.citation_b)}
+                      onSelectSource={(item) => item && onSelect(item)}
+                      onCite={selectCite}
+                    />
+                    {pair.explanation && <p className="status conflict-note">{pair.explanation}</p>}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         <details className="card details-card">
           <summary>Details</summary>
           <div className="meta">
@@ -842,46 +996,6 @@ function AnswerView({ result, docs, selected, onSelect }) {
           {conf.caveat && <p className="status">{conf.caveat}</p>}
           {result.hallucination?.flags?.length > 0 && (
             <p className="error">{result.hallucination.flags.join(" · ")}</p>
-          )}
-          {contradictions.length > 0 && (
-            <>
-              <h3 style={{ marginTop: 16 }}>Source contradictions</h3>
-              <ul className="plain-list">
-                {contradictions.map((pair, index) => (
-                  <li key={`${pair.citation_a}-${pair.citation_b}-${index}`} className="conflict-row">
-                    <span className="flag warn">Disagree</span>
-                    <div>
-                      <p>{pair.explanation}</p>
-                      <p className="status" style={{ margin: 0 }}>
-                        [{pair.citation_a}] {pair.document_a} vs [{pair.citation_b}] {pair.document_b}
-                      </p>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
-          {(result.claims || []).length > 0 && (
-            <>
-              <h3 style={{ marginTop: 16 }}>Claims</h3>
-              <ul className="claim-list">
-                {result.claims.map((claim) => (
-                  <li key={claim.claim_id}>
-                    <button
-                      type="button"
-                      className={`claim ${CLAIM_TONE[claim.status] || ""}`}
-                      onClick={() => {
-                        const cite = claim.supporting_citations?.[0] ?? claim.contradicting_citations?.[0];
-                        if (cite != null) selectCite(cite);
-                      }}
-                    >
-                      <span className={`flag ${CLAIM_TONE[claim.status] || ""}`}>{claim.status.replaceAll("_", " ")}</span>
-                      <span>{claim.text}</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </>
           )}
           <h3 style={{ marginTop: 16 }}>Not used</h3>
           {unused.length === 0 ? (
@@ -1037,43 +1151,6 @@ async function copyText(text) {
   } catch {
     return false;
   }
-}
-
-function exportOriginalityReport(report) {
-  const plag = Math.round((report.similarity ?? 0) * 100);
-  const orig = Math.round((report.originality ?? 1) * 100);
-  const lines = [
-    `Originality report: ${report.filename || "upload"}`,
-    `Plagiarism ${plag}% · Originality ${orig}% unique · ${report.risk || "low"} risk`,
-    (report.flags || []).join(" "),
-    "",
-    "Sources",
-    ...(report.sources || []).map(
-      (source) =>
-        `- ${source.origin === "academic" ? "Academic" : "Library"} ${source.document_name} (${Math.round((source.share ?? 0) * 100)}%)`,
-    ),
-    "",
-    "Sections",
-    ...(report.sections || []).map(
-      (section) =>
-        `- ${section.title}: ${Math.round((section.originality ?? 1) * 100)}% unique (${section.n_flagged || 0} flagged)`,
-    ),
-    "",
-    "Flagged passages",
-  ];
-  for (const row of report.flagged_sentences || []) {
-    lines.push(`[${row.kind || "verbatim"}] ${row.text}`);
-    for (const hint of correctionHints(row)) lines.push(`  · ${hint}`);
-  }
-  const blob = new Blob([lines.filter((line) => line != null).join("\n")], {
-    type: "text/plain;charset=utf-8",
-  });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = "originality-report.txt";
-  link.click();
-  URL.revokeObjectURL(url);
 }
 
 function HistoryList({ items, onPick }) {

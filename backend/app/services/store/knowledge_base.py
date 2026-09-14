@@ -142,6 +142,9 @@ class KnowledgeBase:
                 venue=venue,
                 doi=doi,
             )
+            from ..extraction.paper_structure import extract_and_store
+
+            extract_and_store(self.store, document, chunks)
             if rebuild:
                 self.rebuild_indexes()
             return document, chunks

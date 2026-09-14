@@ -34,8 +34,15 @@ from ...text_utils import (
     build_idf,
     clamp,
     content_tokens,
+    definition_subject,
+    first_question_clause,
+    is_concept_definition_query,
+    is_definitional_sentence,
     idf_weighted_containment,
     jaccard,
+    normalise_query_text,
+    off_topic_penalty,
+    remainder_question_clause,
     split_sentences,
     stem,
     stem_set,
@@ -102,12 +109,16 @@ def score_sentences(
     query: str,
     idf: dict[str, float],
     focus_terms: Iterable[str] = (),
+    question_type: str = "",
 ) -> list[EvidenceSentence]:
     """Score each candidate sentence for how well it answers the query."""
 
+    query = normalise_query_text(query)
     query_tokens = content_tokens(query)
     query_stems = {stem(tok) for tok in query_tokens}
     focus_stems = {stem(tok.lower()) for term in focus_terms for tok in content_tokens(term)}
+    subject_stems = stem_set(definition_subject(query))
+    definitional = question_type == "definition" or is_concept_definition_query(query)
 
     for sentence in sentences:
         sentence_stems = stem_set(sentence.text)
@@ -124,15 +135,24 @@ def score_sentences(
         position_prior = 1.0 / (1.0 + 0.18 * sentence.position)
         rank_prior = 1.0 / (1.0 + 0.25 * sentence.chunk_rank)
         length_prior = clamp(len(sentence.text) / 220.0, 0.35, 1.0)
+        definition_boost = (
+            0.28 if definitional and is_definitional_sentence(sentence.text, subject_stems) else 0.0
+        )
+        topical = off_topic_penalty(sentence.text, query) if definitional else 0.0
 
         sentence.score = (
-            0.44 * lexical
-            + 0.16 * overlap
-            + 0.14 * focus
-            + 0.10 * position_prior
-            + 0.10 * rank_prior
-            + 0.06 * clamp(sentence.chunk_score)
-        ) * length_prior
+            (
+                0.44 * lexical
+                + 0.16 * overlap
+                + 0.14 * focus
+                + 0.10 * position_prior
+                + 0.10 * rank_prior
+                + 0.06 * clamp(sentence.chunk_score)
+            )
+            * length_prior
+            + definition_boost
+            - topical
+        )
     sentences.sort(key=lambda s: (-s.score, s.chunk_rank, s.position))
     return sentences
 
@@ -178,6 +198,7 @@ def declarative_stem(query: str) -> tuple[str, str]:
     """
 
     text = _QUESTION_PREFIX_RE.sub("", (query or "").strip()).strip()
+    text = first_question_clause(text)
     text = text.rstrip("?").strip()
     lowered = text.lower()
 
@@ -248,6 +269,20 @@ def extract_answer_span(sentence: str, query: str, idf: dict[str, float]) -> str
     return best.strip(" ,.;:")
 
 
+def _span_covers_subject(query: str, span: str, sentence: str) -> bool:
+    subject_stems = stem_set(definition_subject(query))
+    if not subject_stems:
+        return True
+    covered = stem_set(span) | stem_set(sentence)
+    if not (subject_stems & covered):
+        return False
+    if is_concept_definition_query(query):
+        return is_definitional_sentence(sentence, subject_stems) or is_definitional_sentence(
+            span, subject_stems
+        )
+    return True
+
+
 def synthesise_lead(
     query: str,
     best: EvidenceSentence,
@@ -260,8 +295,11 @@ def synthesise_lead(
     entailed by the evidence, which downstream verification is meant to catch.
     """
 
+    query = normalise_query_text(query)
     span = extract_answer_span(best.text, query, idf)
     span = truncate(span, 240)
+    if not _span_covers_subject(query, span, best.text):
+        return ""
     lead_stem, mode = declarative_stem(query)
 
     if mode == "yesno":
@@ -294,6 +332,7 @@ def compose_answer(
     avoid_claims: Sequence[str] = (),
     include_lead: bool = True,
     max_sentences: int = MAX_SUPPORTING_SENTENCES,
+    question_type: str = "",
 ) -> dict[str, Any]:
     """Build a grounded draft answer with inline citation markers."""
 
@@ -305,17 +344,54 @@ def compose_answer(
             "lead": "",
         }
 
+    query = normalise_query_text(query)
+    extra = remainder_question_clause(query)
+    merged_focus = [str(term) for term in focus_terms if term]
+    if extra and extra not in merged_focus:
+        merged_focus.append(extra)
+    definitional = question_type == "definition" or is_concept_definition_query(query)
+    subject_stems = stem_set(definition_subject(query))
+
     corpus = [str(item.get("text", "")) for item in evidence]
     idf = build_idf(corpus)
 
-    sentences = score_sentences(collect_sentences(evidence), query, idf, focus_terms)
+    sentences = score_sentences(
+        collect_sentences(evidence),
+        query,
+        idf,
+        merged_focus,
+        question_type="definition" if definitional else question_type,
+    )
     selected = select_sentences(sentences, limit=max_sentences, avoid=avoid_claims)
+    if definitional and subject_stems:
+        defined = [
+            item for item in selected if is_definitional_sentence(item.text, subject_stems)
+        ]
+        if defined:
+            selected = defined
+        else:
+            covered = [
+                item
+                for item in selected
+                if (subject_stems & stem_set(item.text))
+                and off_topic_penalty(item.text, query) < 0.45
+            ]
+            if covered:
+                selected = covered
+            else:
+                return {
+                    "answer": "",
+                    "citations": [],
+                    "selected": [],
+                    "lead": "",
+                }
 
     parts: list[str] = []
     lead = ""
     if include_lead and selected:
         lead = synthesise_lead(query, selected[0], idf)
-        parts.append(lead)
+        if lead:
+            parts.append(lead)
 
     used_citations: list[int] = []
     for sentence in selected:

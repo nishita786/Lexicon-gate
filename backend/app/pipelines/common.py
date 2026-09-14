@@ -29,6 +29,8 @@ PIPELINE_LABELS = {
     PipelineName.traditional: "Traditional RAG",
     PipelineName.self_rag: "Standard Self-RAG",
     PipelineName.enhanced: "Enhanced Self-RAG",
+    PipelineName.no_rag: "Base LLM (no retrieval)",
+    PipelineName.rag_verify: "RAG + verification (no retry)",
 }
 
 

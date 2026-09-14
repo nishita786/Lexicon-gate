@@ -20,6 +20,7 @@ class LLMTask(str, Enum):
     revise = "revise"
     rewrite_query = "rewrite_query"
     extract_claims = "extract_claims"
+    extract_paper_structure = "extract_paper_structure"
     reflect = "reflect"
 
 

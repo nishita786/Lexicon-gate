@@ -11,7 +11,14 @@ import re
 from typing import Sequence
 
 from ..models.query import QueryAnalysis
-from ..text_utils import STOPWORDS, content_tokens, extract_entities, normalise_whitespace
+from ..text_utils import (
+    STOPWORDS,
+    content_tokens,
+    extract_entities,
+    is_concept_definition_query,
+    normalise_query_text,
+    normalise_whitespace,
+)
 
 # Questions that need no corpus lookup: greetings, meta-questions, arithmetic.
 _NO_RETRIEVAL_PATTERNS = (
@@ -50,7 +57,7 @@ def analyse_query(
     corpus_is_empty: bool = False,
 ) -> QueryAnalysis:
     original = query.strip()
-    normalised = normalise_whitespace(original)
+    normalised = normalise_query_text(normalise_whitespace(original))
     lowered = normalised.lower()
 
     needs_retrieval = True
@@ -70,10 +77,13 @@ def analyse_query(
             reason = "Query is too short to form a retrievable information need."
 
     question_type = "factual"
-    for label, patterns in _QUESTION_TYPES:
-        if any(re.search(pattern, lowered) for pattern in patterns):
-            question_type = label
-            break
+    if is_concept_definition_query(normalised):
+        question_type = "definition"
+    else:
+        for label, patterns in _QUESTION_TYPES:
+            if any(re.search(pattern, lowered) for pattern in patterns):
+                question_type = label
+                break
 
     is_multi_hop = _detect_multi_hop(lowered)
     is_ambiguous = _detect_ambiguity(normalised, lowered)

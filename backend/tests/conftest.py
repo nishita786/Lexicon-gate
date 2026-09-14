@@ -19,6 +19,9 @@ def settings(tmp_path, monkeypatch) -> Settings:
     monkeypatch.setenv("SELFRAG_LLM_PROVIDER", "extractive")
     monkeypatch.setenv("SELFRAG_EMBEDDING_PROVIDER", "lsa")
     monkeypatch.setenv("SELFRAG_VECTOR_STORE", "numpy")
+    monkeypatch.setenv("SELFRAG_USE_LLM_JUDGE", "true")
+    monkeypatch.setenv("SELFRAG_NLI_ALLOW_DOWNLOAD", "false")
+    monkeypatch.setenv("SELFRAG_AUTH_REQUIRED", "false")
     get_settings.cache_clear()
     cfg = Settings(
         data_dir=data,
@@ -29,6 +32,9 @@ def settings(tmp_path, monkeypatch) -> Settings:
         llm_provider="extractive",
         embedding_provider="lsa",
         vector_store="numpy",
+        use_llm_judge=True,
+        nli_allow_download=False,
+        auth_required=False,
     )
     cfg.ensure_dirs()
     return cfg

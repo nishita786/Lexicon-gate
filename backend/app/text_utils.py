@@ -101,6 +101,45 @@ _SENTENCE_SPLIT_RE = re.compile(
 _ACRONYM_RE = re.compile(r"\b[A-Z][A-Z0-9\-]{1,9}\b")
 _PROPER_RE = re.compile(r"\b[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})*\b")
 _WHITESPACE_RE = re.compile(r"[ \t\u00a0]+")
+_CAMEL_RE = re.compile(r"([a-z])([A-Z])")
+_COMPOUND_SPLITS: dict[str, tuple[str, ...]] = {
+    "deeplearning": ("deep", "learning"),
+    "machinelearning": ("machine", "learning"),
+    "neuralnetwork": ("neural", "network"),
+    "neuralnetworks": ("neural", "networks"),
+}
+_COMPOUND_RE = re.compile(
+    r"\b(" + "|".join(re.escape(k) for k in _COMPOUND_SPLITS) + r")\b",
+    re.I,
+)
+DEFINITION_CUES: tuple[str, ...] = (
+    "is a",
+    "is an",
+    "refers to",
+    "subset of",
+    "type of",
+    "defined as",
+    "means",
+    "known as",
+    "branch of",
+    "form of",
+    "related to",
+    "we present",
+    "we introduce",
+    "we propose",
+    "framework for",
+    "framework to",
+)
+_CLAUSE_CUT_RE = re.compile(
+    r"\s+(?:how|and how|and what|and why|;|\?)\s+",
+    re.I,
+)
+_GENERIC_EXTRA_STEMS: frozenset[str] = frozenset(
+    """
+    approach method model using used combined automatic fully section goal
+    provide introduction concept paper study result results based
+    """.split()
+)
 
 
 def normalise_whitespace(text: str) -> str:
@@ -110,8 +149,99 @@ def normalise_whitespace(text: str) -> str:
     return text.strip()
 
 
+def normalise_query_text(text: str) -> str:
+    """Space known glued compounds and camelCase so retrieval and stems match."""
+
+    text = normalise_whitespace(text or "")
+    text = _CAMEL_RE.sub(r"\1 \2", text)
+
+    def _split(match: re.Match[str]) -> str:
+        parts = _COMPOUND_SPLITS[match.group(0).lower()]
+        return " ".join(parts)
+
+    return normalise_whitespace(_COMPOUND_RE.sub(_split, text))
+
+
+def first_question_clause(text: str) -> str:
+    stripped = normalise_query_text(text).rstrip("?").strip()
+    parts = _CLAUSE_CUT_RE.split(stripped, maxsplit=1)
+    return (parts[0] if parts else stripped).strip()
+
+
+def remainder_question_clause(text: str) -> str:
+    stripped = normalise_query_text(text).rstrip("?").strip()
+    parts = _CLAUSE_CUT_RE.split(stripped, maxsplit=1)
+    return parts[1].strip() if len(parts) > 1 else ""
+
+
+def definition_subject(query: str) -> str:
+    """Noun phrase after ``what is/are`` on the first clause only."""
+
+    clause = first_question_clause(query)
+    match = re.match(
+        r"^(?:please\s+)?(?:what|which)\s+(?:is|are|was|were)\s+(.+)$",
+        clause,
+        re.I,
+    )
+    if match:
+        return match.group(1).strip()
+    return ""
+
+
+def is_definition_query(query: str) -> bool:
+    clause = first_question_clause(query)
+    if re.match(r"^what\s+(?:is|are|was|were)\s+the\b", clause, re.I):
+        return False
+    return bool(re.match(r"^what\s+(?:is|are|was|were)\b", clause, re.I))
+
+
+def is_concept_definition_query(query: str) -> bool:
+    if not is_definition_query(query):
+        return False
+    tokens = set(content_tokens(definition_subject(query)))
+    skip = {
+        "advantage",
+        "disadvantage",
+        "effect",
+        "purpose",
+        "role",
+        "result",
+        "difference",
+        "limitation",
+    }
+    return not (tokens & skip)
+
+
+def is_definitional_sentence(text: str, subject_stems: set[str]) -> bool:
+    if not subject_stems:
+        return False
+    lowered = (text or "").lower()
+    if not (subject_stems & stem_set(text)):
+        return False
+    return any(cue in lowered for cue in DEFINITION_CUES)
+
+
+def off_topic_penalty(sentence: str, query: str) -> float:
+    """Down-rank application sentences whose distinctive nouns are not in the query."""
+
+    extra = stem_set(sentence) - stem_set(query) - _GENERIC_EXTRA_STEMS
+    extra = {token for token in extra if len(token) >= 3}
+    if len(extra) < 2:
+        return 0.0
+    return min(0.55, 0.11 * len(extra))
+
+
 def tokenize(text: str) -> list[str]:
-    return [tok.lower() for tok in _TOKEN_RE.findall(text or "")]
+    out: list[str] = []
+    for tok in _TOKEN_RE.findall(text or ""):
+        spaced = _CAMEL_RE.sub(r"\1 \2", tok)
+        for part in spaced.split():
+            key = part.lower()
+            if key in _COMPOUND_SPLITS:
+                out.extend(_COMPOUND_SPLITS[key])
+            else:
+                out.append(key)
+    return out
 
 
 def content_tokens(text: str) -> list[str]:

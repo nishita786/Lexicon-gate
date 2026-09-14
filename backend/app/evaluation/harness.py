@@ -38,8 +38,10 @@ from ..pipelines.runner import (
     PipelineConfig,
     PipelineRunner,
     enhanced_config,
+    no_rag_config,
     self_rag_config,
     traditional_config,
+    verify_only_config,
 )
 from ..services.llm.base import LLMProvider
 from ..services.store.knowledge_base import KnowledgeBase
@@ -54,7 +56,16 @@ PIPELINE_BUILDERS = {
     PipelineName.traditional: traditional_config,
     PipelineName.self_rag: self_rag_config,
     PipelineName.enhanced: enhanced_config,
+    PipelineName.no_rag: no_rag_config,
+    PipelineName.rag_verify: verify_only_config,
 }
+
+HEADLINE_BUILDERS = (
+    no_rag_config,
+    traditional_config,
+    verify_only_config,
+    enhanced_config,
+)
 
 
 class EvaluationHarness:
@@ -140,6 +151,65 @@ class EvaluationHarness:
                 "max_retrieval_attempts": self.settings.max_retrieval_attempts,
             },
             duration_seconds=round(time.perf_counter() - t0, 3),
+        )
+        if persist:
+            self._persist(run)
+        return run
+
+    def run_headline(
+        self,
+        limit: int | None = None,
+        categories: Sequence[str] | None = None,
+        k: int = 5,
+        persist: bool = True,
+        dataset: BenchmarkDataset | None = None,
+    ) -> EvaluationRun:
+        """Four-system table: no-RAG, basic RAG, verify-no-retry, full system."""
+
+        t0 = time.perf_counter()
+        if self.kb.is_empty():
+            logger.info("Knowledge base empty; loading demo corpus for evaluation")
+            load_demo_corpus(self.kb)
+
+        dataset = dataset or benchmark_dataset()
+        questions = list(dataset.questions)
+        if categories:
+            wanted = {c if isinstance(c, str) else c.value for c in categories}
+            questions = [q for q in questions if q.category.value in wanted]
+        if limit is not None:
+            questions = questions[: max(0, int(limit))]
+
+        systems: list[SystemEvaluation] = []
+        per_system_correctness: dict[str, list[float]] = {}
+        per_system_hallucination: dict[str, list[float]] = {}
+        for builder in HEADLINE_BUILDERS:
+            config = builder()
+            evaluation = self._evaluate_config(config, questions, k)
+            systems.append(evaluation)
+            per_system_correctness[evaluation.pipeline] = [
+                o.correctness for o in evaluation.per_question
+            ]
+            per_system_hallucination[evaluation.pipeline] = [
+                1.0 if o.hallucinated else 0.0 for o in evaluation.per_question
+            ]
+
+        significance = self._significance(systems, per_system_correctness, per_system_hallucination)
+        run = EvaluationRun(
+            run_id=uuid.uuid4().hex[:12],
+            created_at=datetime.now(timezone.utc),
+            dataset_name=dataset.name,
+            n_questions=len(questions),
+            k=k,
+            systems=systems,
+            significance=significance,
+            config_snapshot={
+                "llm": self.llm.describe(),
+                "embedding": self.kb.embedder.describe(),
+                "vector_store": self.kb.vectors.name,
+                "mode": "headline_four_system",
+            },
+            duration_seconds=round(time.perf_counter() - t0, 3),
+            notes="Headline comparison: no-RAG, Traditional RAG, RAG+verify (no retry), Enhanced Self-RAG.",
         )
         if persist:
             self._persist(run)
@@ -492,6 +562,25 @@ def comparison_table(run: EvaluationRun) -> list[dict]:
         ("Avg Retrieval Attempts", "avg_retrieval_attempts"),
         ("Avg Response Time (ms)", "avg_response_time_ms"),
         ("Avg Confidence", "avg_confidence"),
+    ]
+    summary = summarise(run).headline
+    for label, key in metric_names:
+        row = {"metric": label}
+        for pipeline, values in summary.items():
+            row[pipeline] = values.get(key, 0.0)
+        rows.append(row)
+    return rows
+
+
+def headline_table(run: EvaluationRun) -> list[dict]:
+    """Compact four-system (or current-run) table for viva / papers."""
+
+    rows: list[dict] = []
+    metric_names = [
+        ("Hallucination Rate", "hallucination_rate"),
+        ("Citation Accuracy", "citation_accuracy"),
+        ("Answer Accuracy", "answer_accuracy"),
+        ("Faithfulness", "faithfulness"),
     ]
     summary = summarise(run).headline
     for label, key in metric_names:

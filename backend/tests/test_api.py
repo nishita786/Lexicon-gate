@@ -24,6 +24,7 @@ def client(settings, monkeypatch):
     monkeypatch.setenv("SELFRAG_LLM_PROVIDER", "extractive")
     monkeypatch.setenv("SELFRAG_EMBEDDING_PROVIDER", "lsa")
     monkeypatch.setenv("SELFRAG_VECTOR_STORE", "numpy")
+    monkeypatch.setenv("SELFRAG_AUTH_REQUIRED", "false")
     # Recreate settings cache so the app sees the temp dirs.
     from app import config as config_mod
 
@@ -49,105 +50,41 @@ def test_list_documents(client: TestClient):
     assert response.json()["total_documents"] == 0
 
 
-LONG_PLAGIARISM = (
-    "Dropout randomly disables units in a neural network during training so that "
-    "hidden units cannot co-adapt and the model generalises better on unseen data."
-)
-
-
-def test_plagiarism_check_empty_library(client: TestClient, monkeypatch):
-    monkeypatch.setattr("app.verification.plagiarism.search_papers", lambda *a, **k: ([], "none"))
+def test_upload_stores_paper_extraction(client: TestClient):
     response = client.post(
-        "/api/plagiarism/check",
-        files={"file": ("unique.txt", b"A wholly original note about garden soil pH.\n", "text/plain")},
-    )
-    assert response.status_code == 200
-    body = response.json()
-    assert body["similarity"] == 0
-    assert body["originality"] == 1
-    assert body["library_empty"] is True
-    assert body["filename"] == "unique.txt"
-    assert client.get("/api/documents").json()["total_documents"] == 0
-
-
-def test_plagiarism_check_against_library_does_not_ingest(client: TestClient, monkeypatch):
-    monkeypatch.setattr("app.verification.plagiarism.search_papers", lambda *a, **k: ([], "none"))
-    ingested = client.post(
         "/api/documents/upload",
-        files=[("files", ("handbook.md", f"# Handbook\n\n{LONG_PLAGIARISM}\n".encode(), "text/markdown"))],
-    )
-    assert ingested.status_code == 200
-    before = client.get("/api/documents").json()["total_documents"]
-    copied = (
-        "Notes for class.\n\n"
-        f"{LONG_PLAGIARISM}\n\n"
-        "The rest of this draft is my own wording about coursework deadlines.\n"
-    )
-    checked = client.post(
-        "/api/plagiarism/check",
-        files={"file": ("draft.txt", copied.encode(), "text/plain")},
-    )
-    assert checked.status_code == 200
-    body = checked.json()
-    assert body["library_empty"] is False
-    assert body["similarity"] > 0
-    assert body["originality"] < 1
-    assert body["sources"]
-    assert "handbook" in body["sources"][0]["document_name"].lower()
-    assert body["flagged_sentences"]
-    after = client.get("/api/documents").json()["total_documents"]
-    assert after == before
-
-
-def test_plagiarism_check_academic_abstract(client: TestClient, monkeypatch):
-    from app.models.papers import PaperHit
-
-    def fake_search(query, limit=10, **kwargs):
-        return (
-            [
-                PaperHit(
-                    paper_id="abs-1",
-                    title="Dropout regularisation",
-                    abstract=LONG_PLAGIARISM,
-                    source="semantic_scholar",
-                    url="https://example.org/dropout",
-                    doi="10.1/dropout",
-                )
-            ],
-            "semantic_scholar",
-        )
-
-    monkeypatch.setattr("app.verification.plagiarism.search_papers", fake_search)
-    copied = f"Class notes.\n\n{LONG_PLAGIARISM}\n"
-    before = client.get("/api/documents").json()["total_documents"]
-    checked = client.post(
-        "/api/plagiarism/check",
-        files={"file": ("draft.txt", copied.encode(), "text/plain")},
-    )
-    assert checked.status_code == 200
-    body = checked.json()
-    assert body["library_empty"] is True
-    assert body["similarity"] > 0
-    assert body["sources"]
-    assert body["sources"][0]["origin"] == "academic"
-    assert "dropout" in body["sources"][0]["document_name"].lower()
-    assert body["sources"][0]["url"]
-    assert client.get("/api/documents").json()["total_documents"] == before
-
-
-def test_plagiarism_check_academic_search_fails(client: TestClient, monkeypatch):
-    def boom(*args, **kwargs):
-        raise RuntimeError("index down")
-
-    monkeypatch.setattr("app.verification.plagiarism.search_papers", boom)
-    response = client.post(
-        "/api/plagiarism/check",
-        files={"file": ("unique.txt", b"A wholly original note about garden soil pH.\n", "text/plain")},
+        files=[
+            (
+                "files",
+                (
+                    "methods.md",
+                    (
+                        b"# Study\n\nThis paper we present a convolutional method. "
+                        b"We train on the MNIST dataset. Accuracy is the metric. "
+                        b"Results show the model achieves 99 percent. "
+                        b"A limitation is that it cannot handle colour images.\n"
+                    ),
+                    "text/markdown",
+                ),
+            )
+        ],
     )
     assert response.status_code == 200
-    body = response.json()
-    assert body["similarity"] == 0
-    assert any("unavailable" in flag.lower() for flag in body["flags"])
+    doc_id = response.json()["documents"][0]["document_id"]
+    listed = client.get("/api/documents/extractions")
+    assert listed.status_code == 200
+    body = listed.json()
+    assert body["total"] == 1
+    assert "objective" in body["fields"]
+    paper = body["papers"][0]
+    assert paper["document_id"] == doc_id
+    assert "method" in paper["fields"]
+    one = client.get(f"/api/documents/{doc_id}/extraction")
+    assert one.status_code == 200
+    deleted = client.delete(f"/api/documents/{doc_id}")
+    assert deleted.status_code == 200
+    after = client.get("/api/documents/extractions")
+    assert after.json()["total"] == 0
 
 
 def test_clusters_empty(client: TestClient):
@@ -263,6 +200,22 @@ def test_evaluate_small(client: TestClient):
     body = response.json()
     assert body["n_questions"] == 4
     assert len(body["systems"]) == 2
+
+
+def test_evaluate_headline(client: TestClient):
+    response = client.post(
+        "/api/evaluate",
+        json={
+            "include_headline": True,
+            "limit": 3,
+            "persist": False,
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["n_questions"] == 3
+    assert len(body["systems"]) == 4
+    assert body["config_snapshot"]["mode"] == "headline_four_system"
 
 
 def test_patch_document_endpoint(client: TestClient):

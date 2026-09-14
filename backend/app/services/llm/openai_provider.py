@@ -25,6 +25,7 @@ _JSON_BLOCK_RE = re.compile(r"\{.*\}|\[.*\]", re.S)
 
 STRUCTURED_TASKS = {
     LLMTask.extract_claims,
+    LLMTask.extract_paper_structure,
     LLMTask.rewrite_query,
     LLMTask.reflect,
     LLMTask.retrieval_decision,
@@ -147,6 +148,13 @@ class OpenAIProvider(LLMProvider):
             if not normalised:
                 return None
             return {"claims": normalised}
+        if request.task is LLMTask.extract_paper_structure:
+            from ...models.documents import PAPER_STRUCTURE_FIELDS
+
+            return {
+                key: str(parsed.get(key) or "").strip()
+                for key in PAPER_STRUCTURE_FIELDS
+            }
         if request.task is LLMTask.rewrite_query:
             rewrites = parsed.get("rewrites") or parsed.get("items") or []
             rewrites = [str(r) for r in rewrites if str(r).strip()]

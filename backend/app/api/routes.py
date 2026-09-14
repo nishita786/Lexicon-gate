@@ -13,6 +13,7 @@ from ..evaluation.dataset import benchmark_dataset, load_demo_corpus
 from ..evaluation.harness import (
     EvaluationHarness,
     comparison_table,
+    headline_table,
     list_runs,
     load_latest_run,
     summarise,
@@ -22,6 +23,9 @@ from ..models.documents import (
     Document,
     DocumentBiblioUpdate,
     DocumentListResponse,
+    PAPER_STRUCTURE_FIELDS,
+    PaperStructure,
+    PaperStructureListResponse,
     UploadResponse,
 )
 from ..services.clustering import cluster_documents
@@ -33,7 +37,6 @@ from ..models.query import (
     CompareRequest,
     CompareResponse,
     ComparisonRow,
-    PaperPlagiarismCheck,
     PipelineName,
     PipelineResult,
     QueryRequest,
@@ -41,15 +44,15 @@ from ..models.query import (
 from ..pipelines.runner import (
     PipelineRunner,
     enhanced_config,
+    no_rag_config,
     self_rag_config,
     traditional_config,
+    verify_only_config,
 )
 from ..services.embeddings.registry import available_embedding_providers, get_embedding_provider
 from ..services.llm.registry import available_llm_providers, get_llm_provider
 from ..services.store.history import history
-from ..services.ingestion.loaders import UnsupportedDocumentError, load_bytes
 from ..services.store.knowledge_base import get_knowledge_base
-from ..verification.plagiarism import score_uploaded_paper
 from ..services.vectorstore.registry import available_vector_stores
 
 logger = logging.getLogger(__name__)
@@ -59,6 +62,8 @@ _CONFIGS = {
     PipelineName.traditional: traditional_config,
     PipelineName.self_rag: self_rag_config,
     PipelineName.enhanced: enhanced_config,
+    PipelineName.no_rag: no_rag_config,
+    PipelineName.rag_verify: verify_only_config,
 }
 
 
@@ -202,6 +207,44 @@ def list_documents() -> DocumentListResponse:
     )
 
 
+@router.get("/documents/extractions", response_model=PaperStructureListResponse, tags=["documents"])
+def list_paper_extractions() -> PaperStructureListResponse:
+    papers = get_knowledge_base().store.list_extractions()
+    return PaperStructureListResponse(papers=papers, fields=list(PAPER_STRUCTURE_FIELDS), total=len(papers))
+
+
+@router.post("/documents/extractions/refresh", response_model=PaperStructureListResponse, tags=["documents"])
+def refresh_paper_extractions() -> PaperStructureListResponse:
+    from ..services.extraction.paper_structure import refresh_document
+
+    kb = get_knowledge_base()
+    for document in kb.store.list_documents():
+        refresh_document(kb.store, document.document_id)
+    papers = kb.store.list_extractions()
+    return PaperStructureListResponse(papers=papers, fields=list(PAPER_STRUCTURE_FIELDS), total=len(papers))
+
+
+@router.get("/documents/{document_id}/extraction", response_model=PaperStructure, tags=["documents"])
+def get_paper_extraction(document_id: str) -> PaperStructure:
+    record = get_knowledge_base().store.get_extraction(document_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="No structured extraction for this paper")
+    return record
+
+
+@router.post("/documents/{document_id}/extract", response_model=PaperStructure, tags=["documents"])
+def extract_one_paper(document_id: str) -> PaperStructure:
+    from ..services.extraction.paper_structure import refresh_document
+
+    kb = get_knowledge_base()
+    if kb.store.get_document(document_id) is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    record = refresh_document(kb.store, document_id)
+    if record is None:
+        raise HTTPException(status_code=500, detail="Extraction failed")
+    return record
+
+
 @router.get("/documents/clusters", response_model=ClusterResponse, tags=["documents"])
 def document_clusters() -> ClusterResponse:
     return cluster_documents(get_knowledge_base())
@@ -229,30 +272,6 @@ def reload_demo_corpus() -> dict[str, Any]:
     kb = get_knowledge_base()
     stats = load_demo_corpus(kb, reset=True)
     return {"status": "ok", **stats}
-
-
-@router.post("/plagiarism/check", response_model=PaperPlagiarismCheck, tags=["plagiarism"])
-async def plagiarism_check(file: UploadFile = File(...)) -> PaperPlagiarismCheck:
-    settings = get_settings()
-    name = Path(file.filename or "untitled.txt").name
-    if not name or name in {".", ".."}:
-        name = "untitled.txt"
-    data = await file.read()
-    if not data:
-        raise HTTPException(status_code=400, detail="Empty file.")
-    if len(data) > settings.paper_pdf_max_bytes:
-        raise HTTPException(status_code=413, detail="File is too large to check.")
-    try:
-        pages = load_bytes(name, data)
-    except UnsupportedDocumentError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        logger.exception("Failed to parse plagiarism upload")
-        raise HTTPException(status_code=400, detail=f"Could not read file: {exc}") from exc
-    if not any(page.text.strip() for page in pages):
-        raise HTTPException(status_code=400, detail="No text could be extracted from the file.")
-    kb = get_knowledge_base()
-    return score_uploaded_paper(name, pages, kb.store.all_chunks(), settings)
 
 
 # --------------------------------------------------------------------------- papers
@@ -380,6 +399,13 @@ def get_history_item(query_id: str) -> PipelineResult:
 @router.post("/evaluate", response_model=EvaluationRun, tags=["evaluation"])
 def evaluate(request: EvaluateRequest) -> EvaluationRun:
     harness = EvaluationHarness(get_knowledge_base(), get_llm_provider())
+    if request.include_headline:
+        return harness.run_headline(
+            limit=request.limit,
+            categories=request.categories,
+            k=request.k,
+            persist=request.persist,
+        )
     return harness.run(
         pipelines=request.pipelines,
         include_ablation=request.include_ablation,
@@ -394,11 +420,18 @@ def evaluate(request: EvaluateRequest) -> EvaluationRun:
 def evaluation_results() -> dict[str, Any]:
     run = load_latest_run()
     if run is None:
-        return {"run": None, "summary": None, "table": [], "message": "No evaluation has been run yet."}
+        return {
+            "run": None,
+            "summary": None,
+            "table": [],
+            "headline_table": [],
+            "message": "No evaluation has been run yet.",
+        }
     return {
         "run": run.model_dump(mode="json"),
         "summary": summarise(run).model_dump(mode="json"),
         "table": comparison_table(run),
+        "headline_table": headline_table(run),
     }
 
 

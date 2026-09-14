@@ -9,6 +9,8 @@ dist/
 backend/data/index/
 backend/data/uploads/
 backend/data/results/
+backend/data/auth/
+eval/output/
 *.npy
 *.pkl
 .env

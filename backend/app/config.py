@@ -7,6 +7,7 @@ Values may be overridden through environment variables or a ``.env`` file.
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -56,6 +57,10 @@ class Settings(BaseSettings):
             self.demo_dir = Path(self.data_dir) / "demo"
         if Path(self.chroma_path).resolve() == (default_root / "index" / "chroma").resolve():
             self.chroma_path = Path(self.index_dir) / "chroma"
+        # Honour unprefixed USE_LLM_JUDGE when SELFRAG_USE_LLM_JUDGE is unset.
+        raw = os.environ.get("USE_LLM_JUDGE")
+        if raw is not None and os.environ.get("SELFRAG_USE_LLM_JUDGE") is None:
+            self.use_llm_judge = raw.strip().lower() in {"1", "true", "yes", "on"}
         return self
 
     # -------------------------------------------------------------- providers
@@ -112,6 +117,12 @@ class Settings(BaseSettings):
     max_correction_loops: int = 2
 
     # ----------------------------------------------------- claim verification
+    # False (default): DeBERTa/DistilBERT NLI. True: lexical baseline (llm_judge_verify).
+    # Env: SELFRAG_USE_LLM_JUDGE or USE_LLM_JUDGE.
+    use_llm_judge: bool = False
+    nli_model: str = "cross-encoder/nli-deberta-v3-xsmall"
+    nli_fallback_model: str = "typeform/distilbert-base-uncased-mnli"
+    nli_allow_download: bool = True
     claim_support_threshold: float = 0.55
     claim_partial_threshold: float = 0.32
     contradiction_threshold: float = 0.55
@@ -133,6 +144,10 @@ class Settings(BaseSettings):
     conf_weight_source_agreement: float = 0.15
     conf_weight_coverage: float = 0.20
     abstain_confidence_threshold: float = 0.35
+
+    # ---------------------------------------------------------------- auth
+    auth_required: bool = True
+    session_ttl_seconds: int = 60 * 60 * 24 * 7
 
     # ---------------------------------------------------------- paper search
     semantic_scholar_api_key: str | None = None

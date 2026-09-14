@@ -5,7 +5,14 @@ from __future__ import annotations
 from app.generation.prompts import INSUFFICIENT_ANSWER, UNRELATED_ANSWER
 from app.models.query import AnswerStatus, Claim, ClaimStatus, PipelineName
 from app.pipelines.common import TraceRecorder, drop_unsupported_sentences
-from app.pipelines.runner import PipelineRunner, enhanced_config, self_rag_config, traditional_config
+from app.pipelines.runner import (
+    PipelineRunner,
+    enhanced_config,
+    no_rag_config,
+    self_rag_config,
+    traditional_config,
+    verify_only_config,
+)
 
 
 def test_traditional_rag_answers_unanswerable_question(demo_kb, llm):
@@ -46,6 +53,25 @@ def test_enhanced_detects_dropout_conflict(demo_kb, llm):
     runner = PipelineRunner(demo_kb, llm, enhanced_config())
     result = runner.run("Does dropout reduce overfitting?")
     assert result.contradictions or result.status is AnswerStatus.conflicting_evidence
+
+
+def test_no_rag_never_retrieves(demo_kb, llm):
+    runner = PipelineRunner(demo_kb, llm, no_rag_config())
+    result = runner.run("What is the main advantage of dropout?")
+    assert result.pipeline is PipelineName.no_rag
+    assert result.evidence == []
+    assert result.metrics.retrieval_calls == 0
+    assert result.metrics.retrieval_attempts == 0
+
+
+def test_verify_only_labels_claims_without_correction(demo_kb, llm):
+    runner = PipelineRunner(demo_kb, llm, verify_only_config())
+    result = runner.run("What is the main advantage of dropout?")
+    assert result.pipeline is PipelineName.rag_verify
+    assert result.evidence
+    assert result.metrics.correction_loops == 0
+    stages = {event.stage for event in result.trace}
+    assert "claims" in stages or "verify" in stages or result.claims
 
 
 def test_self_rag_can_skip_retrieval_for_greeting(demo_kb, llm):

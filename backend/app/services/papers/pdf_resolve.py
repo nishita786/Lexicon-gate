@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from urllib.parse import quote, urlparse
 
 from ...config import Settings, get_settings
@@ -12,6 +13,7 @@ from .search import JsonGetter, OPENALEX_WORKS, default_get_json, openalex_heade
 logger = logging.getLogger(__name__)
 
 UNPAYWALL = "https://api.unpaywall.org/v2/{doi}"
+_PMC_ARTICLE_RE = re.compile(r"/articles/(?:PMC)?(\d+)", re.I)
 
 
 def looks_like_pdf_url(url: str | None) -> bool:
@@ -40,7 +42,21 @@ def publisher_pdf_rewrite(url: str | None) -> str | None:
         return f"{base}/pdf"
     if "frontiersin.org" in host:
         return f"{base}/pdf"
+    pmc_id = _pmc_id_from_path(parsed.path)
+    if pmc_id and ("ncbi.nlm.nih.gov" in host or host.startswith("pmc.")):
+        if "pmc.ncbi.nlm.nih.gov" in host:
+            return f"https://pmc.ncbi.nlm.nih.gov/articles/{pmc_id}/pdf/"
+        return f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pmc_id}/pdf/"
+    if pmc_id and "europepmc.org" in host:
+        return f"https://europepmc.org/articles/{pmc_id}?pdf=render"
     return None
+
+
+def _pmc_id_from_path(path: str) -> str | None:
+    match = _PMC_ARTICLE_RE.search(path or "")
+    if not match:
+        return None
+    return f"PMC{match.group(1)}"
 
 
 def official_paper_url(hit: PaperHit) -> str | None:
@@ -70,13 +86,16 @@ def pdf_candidates(
         if not url:
             return
         url = url.strip()
+        rewritten = publisher_pdf_rewrite(url)
+        if rewritten:
+            url = rewritten
+        elif not looks_like_pdf_url(url):
+            return
         if url and url not in ordered:
             ordered.append(url)
 
-    if looks_like_pdf_url(hit.pdf_url):
-        add(hit.pdf_url)
-    for source in (hit.pdf_url, hit.url):
-        add(publisher_pdf_rewrite(source))
+    add(hit.pdf_url)
+    add(hit.url)
     for url in unpaywall_pdf_urls(hit.doi, get_json=get_json, settings=settings):
         add(url)
     for url in openalex_pdf_urls_by_doi(hit.doi, get_json=get_json, settings=settings):
@@ -104,14 +123,20 @@ def unpaywall_pdf_urls(
         logger.warning("Unpaywall lookup failed for %s: %s", doi, exc)
         return []
     urls: list[str] = []
-    best = payload.get("best_oa_location") or {}
-    if best.get("url_for_pdf"):
-        urls.append(best["url_for_pdf"])
+    _collect_oa_location_urls(urls, payload.get("best_oa_location") or {})
     for loc in payload.get("oa_locations") or []:
-        pdf = (loc or {}).get("url_for_pdf")
-        if pdf:
-            urls.append(pdf)
+        _collect_oa_location_urls(urls, loc or {})
     return urls
+
+
+def _collect_oa_location_urls(urls: list[str], loc: dict) -> None:
+    pdf = loc.get("url_for_pdf")
+    if pdf:
+        urls.append(pdf)
+        return
+    landing = loc.get("url")
+    if landing:
+        urls.append(landing)
 
 
 def openalex_pdf_urls_by_doi(

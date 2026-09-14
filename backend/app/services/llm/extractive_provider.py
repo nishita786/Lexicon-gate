@@ -25,6 +25,7 @@ class ExtractiveProvider(LLMProvider):
             LLMTask.answer: self._answer,
             LLMTask.revise: self._answer,
             LLMTask.extract_claims: self._extract_claims,
+            LLMTask.extract_paper_structure: self._extract_paper_structure,
             LLMTask.rewrite_query: self._rewrite_query,
             LLMTask.reflect: self._reflect,
             LLMTask.retrieval_decision: self._retrieval_decision,
@@ -34,7 +35,10 @@ class ExtractiveProvider(LLMProvider):
             raise ValueError(f"Unsupported task for ExtractiveProvider: {request.task}")
 
         structured = handler(payload)
-        text = structured.get("answer") or json.dumps(structured, ensure_ascii=False)
+        if request.task in (LLMTask.answer, LLMTask.revise):
+            text = str(structured.get("answer") or "")
+        else:
+            text = structured.get("answer") or json.dumps(structured, ensure_ascii=False)
         prompt_chars = sum(
             len(str(item.get("text", ""))) for item in payload.get("evidence", [])
         ) + len(str(payload.get("query", "")))
@@ -57,6 +61,7 @@ class ExtractiveProvider(LLMProvider):
             avoid_claims=payload.get("avoid_claims", ()),
             include_lead=payload.get("include_lead", True),
             max_sentences=payload.get("max_sentences", engine.MAX_SUPPORTING_SENTENCES),
+            question_type=str(payload.get("question_type") or ""),
         )
 
     def _extract_claims(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -64,6 +69,21 @@ class ExtractiveProvider(LLMProvider):
             payload.get("answer", ""), max_claims=payload.get("max_claims", 12)
         )
         return {"claims": claims}
+
+    def _extract_paper_structure(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from ...models.documents import Chunk, ChunkMetadata
+        from ..extraction.paper_structure import _heuristic_fields
+
+        chunks: list[Chunk] = []
+        for item in payload.get("chunks") or []:
+            chunks.append(
+                Chunk(
+                    chunk_id=str(item.get("chunk_id") or f"c{len(chunks)+1}"),
+                    text=str(item.get("text") or ""),
+                    metadata=ChunkMetadata(document_id="doc", document_name="paper"),
+                )
+            )
+        return _heuristic_fields(chunks)
 
     def _rewrite_query(self, payload: dict[str, Any]) -> dict[str, Any]:
         rewrites = engine.rewrite_queries(

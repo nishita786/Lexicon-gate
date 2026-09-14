@@ -24,6 +24,13 @@ Rules:
 - Do not invent page numbers, figures, or statistics.
 """
 
+UNGROUNDED_SYSTEM = """You answer from your own knowledge. There are no retrieved sources.
+
+Rules:
+- Do not invent citations or document names.
+- If you do not know, say you do not know.
+"""
+
 
 def format_evidence(evidence: Sequence[EvidenceItem]) -> str:
     blocks: list[str] = []
@@ -44,6 +51,13 @@ def answer_prompt(query: str, evidence: Sequence[EvidenceItem], analysis: QueryA
         f"{extra}\n\n"
         f"Sources:\n{format_evidence(evidence)}\n\n"
         "Write a concise, evidence-grounded answer with inline citations like [1]."
+    )
+
+
+def ungrounded_answer_prompt(query: str) -> str:
+    return (
+        f"Question: {query}\n\n"
+        "Answer using only your own knowledge. Do not cite documents."
     )
 
 

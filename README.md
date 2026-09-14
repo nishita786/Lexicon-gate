@@ -29,7 +29,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173. The Vite dev server proxies `/api` to http://127.0.0.1:8000.
+Open , then **sign up** (or log in). The Vite dev server proxies `/api` to http://127.0.0.1:8000. Accounts are stored locally in `backend/data/auth/` (not the paper library).
 
 A new session starts with an **empty library**. Upload sources, then ask. If an older research demo is still indexed, remove those files in Library (or delete `backend/data` and restart).
 
@@ -52,7 +52,9 @@ cd backend
 .venv/bin/python -m pytest -q
 ```
 
-`/api/evaluate` and `/api/query/compare` remain for that harness. They are not part of the product UI.
+`/api/evaluate` and `/api/query/compare` remain for that harness. They are not part of the product UI. The four-system headline table (no-RAG, basic RAG, RAG+verify, full Enhanced Self-RAG) lives in evaluation, not Ask.
+
+Labeled eval on **your** papers (empty gold until you fill it): `python eval/run_eval.py --dump-chunks` then edit `eval/test_set.json` and run `python eval/run_eval.py`. Citation precision and relevance stay pending manual review.
 
 ## Configuration
 
@@ -66,4 +68,4 @@ Optional hosted models (OpenAI, Ollama) plug in through the same provider interf
 - Confidence is a function of retrieved evidence, not a guarantee of truth.
 - Page numbers for markdown are synthetic unless the file has page markers or is a PDF.
 
-Engineering notes: [Architecture](docs/architecture.md), [Methodology](docs/methodology.md), [Evaluation](docs/evaluation.md), [API](docs/api.md).
+Engineering notes: [Architecture](docs/architecture.md), [Methodology](docs/methodology.md), [Evaluation](docs/evaluatihttp://localhost:5173on.md), [API](docs/api.md).
