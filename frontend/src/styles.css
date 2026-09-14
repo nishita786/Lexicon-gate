@@ -216,7 +216,25 @@ body {
   min-height: 40px;
   white-space: nowrap;
   width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   transition: color 0.2s var(--ease);
+}
+.nav-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--on-primary);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
 }
 .sidebar nav button:hover { color: var(--ink); }
 .sidebar nav button.active {
@@ -615,7 +633,7 @@ button.linkish:focus-visible {
 .metric.warn .value { color: var(--orange); }
 .metric.bad .value { color: var(--coral); }
 
-button.primary, button.ghost, button.danger, label.primary, a.ghost {
+button.primary, button.ghost, button.danger, label.primary, a.ghost, a.primary {
   font: inherit;
   font-size: 14px;
   font-weight: 500;
@@ -626,10 +644,14 @@ button.primary, button.ghost, button.danger, label.primary, a.ghost {
   min-height: 44px;
   transition: transform 0.15s var(--ease), opacity 0.2s var(--ease), background 0.2s var(--ease);
 }
-button.primary, label.primary {
+button.primary, label.primary, a.primary {
   background: var(--ink);
   color: var(--on-primary);
   border: 0;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 button.primary:active:not(:disabled),
 label.primary:active {
@@ -1049,9 +1071,205 @@ a.ghost {
 }
 .error { color: var(--coral); }
 
+.event-filters .event-select {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-muted);
+  min-width: 160px;
+}
+.event-filters .event-select select {
+  min-width: 160px;
+}
+.event-alerts { margin-bottom: 16px; }
+.event-alerts h3 { margin-bottom: 8px; }
+.event-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+.event-card {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.event-media {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  background: linear-gradient(135deg, rgba(120, 90, 255, 0.25), rgba(20, 20, 28, 0.9));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.event-media img,
+.event-logo {
+  width: min(72%, 220px);
+  height: min(68%, 120px);
+  max-width: 220px;
+  max-height: 120px;
+  object-fit: contain;
+  display: block;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.94);
+  padding: 14px 18px;
+  box-sizing: border-box;
+}
+.event-icon {
+  font-size: 42px;
+  line-height: 1;
+  opacity: 0.9;
+  color: var(--ink);
+}
+.event-type-badge {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 4px 8px;
+  border-radius: var(--radius-pill);
+  background: rgba(12, 12, 16, 0.72);
+  color: var(--on-primary);
+  backdrop-filter: blur(6px);
+}
+.event-live-badge {
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 4px 8px;
+  border-radius: var(--radius-pill);
+  background: rgba(34, 197, 94, 0.9);
+  color: #04120a;
+}
+.event-media.type-ieee {
+  background: linear-gradient(135deg, rgba(0, 98, 155, 0.45), rgba(20, 20, 28, 0.92));
+}
+.event-media.type-research_cfp {
+  background: linear-gradient(135deg, rgba(180, 90, 40, 0.4), rgba(20, 20, 28, 0.92));
+}
+.event-media.type-hackathon {
+  background: linear-gradient(135deg, rgba(40, 160, 120, 0.4), rgba(20, 20, 28, 0.92));
+}
+.event-media.type-workshop {
+  background: linear-gradient(135deg, rgba(90, 120, 200, 0.4), rgba(20, 20, 28, 0.92));
+}
+.event-media.type-meetup {
+  background: linear-gradient(135deg, rgba(160, 70, 140, 0.4), rgba(20, 20, 28, 0.92));
+}
+.event-card-body {
+  padding: 14px 16px 16px;
+}
+.event-card h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+  color: var(--ink);
+}
+.event-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.event-location {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--ink);
+}
+.event-summary {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--ink-muted);
+  line-height: 1.4;
+}
+.event-closed {
+  color: var(--coral);
+}
+.event-closed-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 10px 15px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--ink-muted);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.14px;
+}
+
+.workspace-library-hint {
+  margin: -4px 0 14px;
+}
+.workspace-search {
+  margin-bottom: 16px;
+}
+.workspace-mode-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.workspace-panels {
+  display: grid;
+  grid-template-columns: 0.9fr 1.1fr;
+  gap: 14px;
+  align-items: start;
+}
+.workspace-recent-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+.workspace-kind {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--ink-muted);
+}
+.workspace-kind.ask {
+  color: var(--ink);
+}
+.workspace-kind.papers {
+  color: var(--accent, var(--ink));
+}
+.workspace-active {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.workspace-active-heading {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.workspace-paper-hits {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 @media (max-width: 1100px) {
   .ask-workspace.has-result { grid-template-columns: 1fr; }
   .grid.metrics, .grid.two, .grid.three, .compare-cols, .paper-row, .mismatch { grid-template-columns: 1fr; }
+  .workspace-panels { grid-template-columns: 1fr; }
   .paper-row { flex-direction: column; }
   .page-title h2 { font-size: 24px; letter-spacing: -0.7px; }
   .auth-card h1 { font-size: 28px; }

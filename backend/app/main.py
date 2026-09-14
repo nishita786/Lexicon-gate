@@ -10,7 +10,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .api.auth import router as auth_router
 from .api.auth_gate import AuthGateMiddleware
+from .api.events import router as events_router
 from .api.routes import router
+from .api.workspace import router as workspace_router
 from .config import get_settings
 from .services.store.knowledge_base import get_knowledge_base
 
@@ -55,6 +57,8 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.include_router(auth_router, prefix="/api")
+    app.include_router(events_router, prefix="/api")
+    app.include_router(workspace_router, prefix="/api")
     app.include_router(router, prefix="/api")
     return app
 

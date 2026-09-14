@@ -3,10 +3,12 @@ import { api, ms, pct } from "./api";
 import AuthScreen, { Logo } from "./Auth";
 
 const NAV = [
+  ["workspace", "Workspace"],
   ["ask", "Ask"],
   ["find", "Find papers"],
   ["library", "Library"],
   ["compare", "Compare"],
+  ["events", "Events"],
 ];
 
 const STATUS_COPY = {
@@ -26,7 +28,7 @@ const CLAIM_META = {
 
 export default function App() {
   const [session, setSession] = useState(undefined);
-  const [page, setPage] = useState("ask");
+  const [page, setPage] = useState("workspace");
   const [health, setHealth] = useState(null);
   const [docs, setDocs] = useState([]);
   const [lastResult, setLastResult] = useState(null);
@@ -77,7 +79,7 @@ export default function App() {
     setDocs([]);
     setLastResult(null);
     setHistory([]);
-    setPage("ask");
+    setPage("workspace");
   }
 
   const navIndex = Math.max(0, NAV.findIndex(([id]) => id === page));
@@ -135,7 +137,7 @@ export default function App() {
               className={page === id ? "active" : ""}
               onClick={() => setPage(id)}
             >
-              {label}
+              <span>{label}</span>
             </button>
           ))}
         </nav>
@@ -155,6 +157,9 @@ export default function App() {
           </span>
         </header>
         <main className="main" id="main" data-page={page} key={page}>
+          {page === "workspace" && (
+            <UserWorkspace session={session} docs={docs} onLibraryChange={refresh} />
+          )}
           {page === "ask" && (
             <Ask
               docs={docs}
@@ -180,9 +185,595 @@ export default function App() {
             />
           )}
           {page === "compare" && <ComparePapers docs={docs} />}
+          {page === "events" && <Events />}
         </main>
       </div>
     </div>
+  );
+}
+
+function formatEventDate(value) {
+  if (!value) return "—";
+  try {
+    return new Date(`${value}T00:00:00`).toLocaleDateString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    });
+  } catch {
+    return value;
+  }
+}
+
+function UserWorkspace({ session, docs, onLibraryChange }) {
+  const [mode, setMode] = useState("ask");
+  const [query, setQuery] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [importing, setImporting] = useState(null);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [recents, setRecents] = useState([]);
+  const [askResult, setAskResult] = useState(null);
+  const [selected, setSelected] = useState(null);
+  const [paperResults, setPaperResults] = useState(null);
+  const emptyLibrary = (docs || []).length === 0;
+
+  const loadRecents = useCallback(async () => {
+    try {
+      const payload = await api.workspaceRecents(24);
+      setRecents(payload.items || []);
+    } catch {
+      /* keep prior list */
+    }
+  }, []);
+
+  useEffect(() => {
+    loadRecents();
+  }, [loadRecents]);
+
+  async function submit(event) {
+    event?.preventDefault();
+    const text = query.trim();
+    if (!text || busy) return;
+    if (mode === "ask" && emptyLibrary) {
+      setError("Add sources to your library before asking.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    setMessage("");
+    setSelected(null);
+    try {
+      if (mode === "ask") {
+        const payload = await api.query({ query: text, include_trace: true });
+        setAskResult(payload);
+        setPaperResults(null);
+        await onLibraryChange?.();
+        await loadRecents();
+      } else {
+        const payload = await api.searchPapers(text);
+        setPaperResults(payload);
+        setAskResult(null);
+        await api.savePaperSearch({
+          query: text,
+          provider: payload.provider || "unknown",
+          papers: (payload.papers || []).slice(0, 20).map((paper) => ({
+            paper_id: paper.paper_id,
+            title: paper.title,
+            authors: paper.authors || [],
+            year: paper.year,
+            source: paper.source,
+            url: paper.url,
+            pdf_url: paper.pdf_url,
+            doi: paper.doi,
+            venue: paper.venue,
+            abstract: paper.abstract,
+            open_access: paper.open_access,
+            citation_count: paper.citation_count,
+          })),
+        });
+        if (!payload.papers?.length) setMessage("No papers found. Try a more specific title or author.");
+        await loadRecents();
+      }
+    } catch (err) {
+      setError(err.message || "Search failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openRecent(item) {
+    setError("");
+    setMessage("");
+    setSelected(null);
+    setQuery(item.query || "");
+    if (item.kind === "ask") {
+      setMode("ask");
+      try {
+        const saved = await api.historyItem(item.id);
+        setAskResult(saved);
+        setPaperResults(null);
+      } catch (err) {
+        setError(err.message || "Could not restore that Ask result.");
+      }
+      return;
+    }
+    setMode("papers");
+    try {
+      const saved = await api.paperSearchItem(item.id);
+      setPaperResults({
+        query: saved.query,
+        provider: saved.provider,
+        papers: saved.papers || [],
+      });
+      setAskResult(null);
+    } catch (err) {
+      setError(err.message || "Could not restore that paper search.");
+    }
+  }
+
+  async function addPaper(paper) {
+    setImporting(paper.paper_id);
+    setError("");
+    setMessage("");
+    try {
+      const result = await api.importPaper({
+        paper_id: paper.paper_id,
+        source: paper.source,
+        title: paper.title,
+        authors: paper.authors,
+        year: paper.year,
+        venue: paper.venue,
+        abstract: paper.abstract,
+        doi: paper.doi,
+        pdf_url: paper.pdf_url,
+        url: paper.url,
+      });
+      await onLibraryChange();
+      if (result.ingested === "pdf") {
+        setMessage(`Added “${paper.title}”. Full PDF indexed.`);
+      } else {
+        setMessage(
+          `Added “${paper.title}”. Could not fetch a PDF. Abstract saved — use Open paper for the official copy.`
+        );
+      }
+      if (result.warnings?.length) setError(result.warnings.join(" · "));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setImporting(null);
+    }
+  }
+
+  const askBadge = askResult ? verificationBadge(askResult) : null;
+
+  return (
+    <>
+      <div className="page-title">
+        <div>
+          <h2>Workspace</h2>
+          <p>
+            Welcome{session?.name ? `, ${session.name}` : ""}. Keep past Ask and paper searches in
+            Recents, reopen them, and run the next search here.
+          </p>
+        </div>
+      </div>
+
+      <p className="workspace-library-hint status">
+        {(docs || []).length
+          ? `${docs.length} source${docs.length === 1 ? "" : "s"} in your library`
+          : "Library is empty — Find papers or upload in Library, then Ask."}
+      </p>
+
+      <form className="card workspace-search" onSubmit={submit}>
+        <div className="workspace-mode-chips" role="group" aria-label="Search mode">
+          <button
+            type="button"
+            className={`chip${mode === "ask" ? " active" : ""}`}
+            onClick={() => setMode("ask")}
+          >
+            Ask
+          </button>
+          <button
+            type="button"
+            className={`chip${mode === "papers" ? " active" : ""}`}
+            onClick={() => setMode("papers")}
+          >
+            Find papers
+          </button>
+        </div>
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder={
+            mode === "ask"
+              ? emptyLibrary
+                ? "Add library sources first, then ask…"
+                : "Ask a question about your sources…"
+              : "Paper title, topic, or author…"
+          }
+          disabled={mode === "ask" && emptyLibrary}
+        />
+        <div className="row" style={{ marginTop: 10 }}>
+          <button
+            className={`primary${busy ? " is-busy" : ""}`}
+            type="submit"
+            disabled={busy || !query.trim() || (mode === "ask" && emptyLibrary)}
+          >
+            {busy ? (mode === "ask" ? "Checking sources…" : "Searching…") : mode === "ask" ? "Ask" : "Search"}
+          </button>
+          {paperResults?.provider && mode === "papers" && (
+            <span className="status">Results from {String(paperResults.provider).replaceAll("_", " ")}</span>
+          )}
+        </div>
+      </form>
+
+      {error && <p className="error">{error}</p>}
+      {message && <p className="status">{message}</p>}
+
+      <div className="workspace-panels">
+        <div className="card">
+          <h3>Recents</h3>
+          {!recents.length ? (
+            <p className="status" style={{ marginTop: 0 }}>
+              No searches yet. Ask a question or find papers above — they stay here so you can continue.
+            </p>
+          ) : (
+            <ul className="plain-list history">
+              {recents.map((item) => (
+                <li key={`${item.kind}-${item.id}`}>
+                  <button type="button" className="history-item" onClick={() => openRecent(item)}>
+                    <span className="workspace-recent-main">
+                      <span className={`workspace-kind ${item.kind}`}>
+                        {item.kind === "ask" ? "Ask" : "Papers"}
+                      </span>
+                      <span>{item.query}</span>
+                    </span>
+                    <span className="status">
+                      {item.kind === "ask"
+                        ? `${(STATUS_COPY[item.status] || {}).label || item.status || "Ask"}${
+                            item.confidence != null ? ` · ${pct(item.confidence)}` : ""
+                          }`
+                        : `${item.paper_count ?? 0} paper${(item.paper_count ?? 0) === 1 ? "" : "s"}`}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="workspace-active">
+          {askResult && (
+            <div className="card">
+              <h3>Ask result</h3>
+              {askBadge && (
+                <div className="verify-block" style={{ marginBottom: 10 }}>
+                  <span className={`flag ${askBadge.tone}`}>{askBadge.label}</span>
+                </div>
+              )}
+              <AnswerView result={askResult} docs={docs} selected={selected} onSelect={setSelected} />
+            </div>
+          )}
+
+          {paperResults && (
+            <div className="workspace-paper-hits">
+              <h3 className="workspace-active-heading">Paper hits</h3>
+              {!(paperResults.papers || []).length ? (
+                <p className="status">No papers in this search.</p>
+              ) : (
+                (paperResults.papers || []).map((paper) => (
+                  <div key={`${paper.source}-${paper.paper_id}`} className="card paper-row">
+                    <div>
+                      <strong>{paper.title}</strong>
+                      <div className="status" style={{ margin: "4px 0 0" }}>
+                        {(paper.authors || []).slice(0, 8).join(", ") || "Unknown author"}
+                        {paper.year ? ` · ${paper.year}` : ""}
+                        {paper.venue ? ` · ${paper.venue}` : ""}
+                      </div>
+                      {paper.abstract && (
+                        <p className="cite-snippet">
+                          {paper.abstract.slice(0, 280)}
+                          {paper.abstract.length > 280 ? "…" : ""}
+                        </p>
+                      )}
+                    </div>
+                    <div className="paper-actions">
+                      {paperHref(paper) && (
+                        <a className="ghost" href={paperHref(paper)} target="_blank" rel="noreferrer">
+                          Open paper
+                        </a>
+                      )}
+                      <button
+                        type="button"
+                        className="primary"
+                        disabled={importing === paper.paper_id}
+                        onClick={() => addPaper(paper)}
+                      >
+                        {importing === paper.paper_id ? "Adding…" : "Add to library"}
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+
+          {!askResult && !paperResults && (
+            <div className="card">
+              <h3>Active research</h3>
+              <p className="status" style={{ marginTop: 0 }}>
+                Run a search or open a recent item to continue here.
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+const EVENT_TYPE_LABELS = {
+  conference: "Conference",
+  ieee: "IEEE",
+  research_cfp: "Research CFP",
+  workshop: "Workshop",
+  hackathon: "Hackathon",
+  meetup: "Meetup",
+};
+
+const EVENT_TYPE_ICONS = {
+  conference: "▣",
+  ieee: "⚡",
+  research_cfp: "¶",
+  workshop: "◇",
+  hackathon: "⌘",
+  meetup: "◎",
+};
+
+function Events() {
+  const [q, setQ] = useState("");
+  const [region, setRegion] = useState("all");
+  const [city, setCity] = useState("");
+  const [topic, setTopic] = useState("");
+  const [eventType, setEventType] = useState("");
+  const [status, setStatus] = useState("active");
+  const [items, setItems] = useState([]);
+  const [cities, setCities] = useState([]);
+  const [topics, setTopics] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [brokenIcons, setBrokenIcons] = useState({});
+
+  const load = useCallback(async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const list = await api.events({ q, region, city, topic, event_type: eventType, status });
+      setItems(list.events || []);
+      setCities(list.cities || []);
+      setTopics(list.topics || []);
+      setBrokenIcons({});
+    } catch (err) {
+      setError(err.message || "Could not load events.");
+    } finally {
+      setBusy(false);
+    }
+  }, [q, region, city, topic, eventType, status]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  return (
+    <>
+      <div className="page-title">
+        <div>
+          <h2>Events</h2>
+          <p>Current and upcoming conferences, IEEE, research CFPs, and hackathons — apply on the official site.</p>
+        </div>
+      </div>
+      <div className="spotlight spotlight-magenta">
+        <p className="spotlight-kicker">Live & upcoming</p>
+        <p>Browse events happening now or coming up next. Filter by type and city, then open Apply now.</p>
+      </div>
+      <form
+        className="card event-filters"
+        onSubmit={(event) => {
+          event.preventDefault();
+          load();
+        }}
+      >
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search events, cities, topics…"
+          aria-label="Search events"
+        />
+        <div className="chips" style={{ marginTop: 12 }}>
+          {[
+            ["all", "All regions"],
+            ["india", "India"],
+            ["worldwide", "Worldwide"],
+          ].map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              className={`chip${region === id ? " active" : ""}`}
+              onClick={() => setRegion(id)}
+            >
+              {label}
+            </button>
+          ))}
+          {[
+            ["active", "Happening & upcoming"],
+            ["live", "Happening now"],
+            ["upcoming", "Upcoming"],
+            ["open", "Registration open"],
+            ["closed", "Registration closed"],
+            ["past", "Past"],
+          ].map(([id, label]) => (
+            <button
+              key={`status-${id}`}
+              type="button"
+              className={`chip${status === id ? " active" : ""}`}
+              onClick={() => setStatus(id)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="chips" style={{ marginTop: 10 }}>
+          <button
+            type="button"
+            className={`chip${!eventType ? " active" : ""}`}
+            onClick={() => setEventType("")}
+          >
+            All types
+          </button>
+          {Object.entries(EVENT_TYPE_LABELS).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              className={`chip${eventType === id ? " active" : ""}`}
+              onClick={() => setEventType(id)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="row" style={{ marginTop: 12 }}>
+          <label className="event-select">
+            City
+            <select value={city} onChange={(e) => setCity(e.target.value)}>
+              <option value="">All cities</option>
+              {cities.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="event-select">
+            Topic
+            <select value={topic} onChange={(e) => setTopic(e.target.value)}>
+              <option value="">All topics</option>
+              {topics.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button className={`primary${busy ? " is-busy" : ""}`} type="submit" disabled={busy}>
+            {busy ? "Loading…" : "Apply filters"}
+          </button>
+        </div>
+      </form>
+      {error && <p className="error">{error}</p>}
+      <div className="event-grid">
+        {items.map((item) => {
+          const typeLabel = EVENT_TYPE_LABELS[item.event_type] || "Event";
+          const typeIcon = EVENT_TYPE_ICONS[item.event_type] || "▣";
+          const imageUrl = (item.image_url || "").trim();
+          const showImg = Boolean(imageUrl) && !brokenIcons[item.event_id];
+          const registrationOpen = item.registration_open !== false;
+          const timing = item.timing || "upcoming";
+          const timingLabel =
+            timing === "live" ? "Happening now" : timing === "past" ? "Past" : "Upcoming";
+          const timingTone = timing === "live" ? "good" : timing === "past" ? "neutral" : "neutral";
+          return (
+            <article key={item.event_id} className="card event-card">
+              <div className={`event-media type-${item.event_type || "conference"}`}>
+                {showImg ? (
+                  <img
+                    className="event-logo"
+                    src={imageUrl}
+                    alt=""
+                    loading="lazy"
+                    onError={() =>
+                      setBrokenIcons((prev) => ({ ...prev, [item.event_id]: true }))
+                    }
+                  />
+                ) : (
+                  <span className="event-icon" aria-hidden="true">
+                    {typeIcon}
+                  </span>
+                )}
+                <span className="event-type-badge">{typeLabel}</span>
+                {timing === "live" && <span className="event-live-badge">Live</span>}
+              </div>
+              <div className="event-card-body">
+                <div className="event-card-top">
+                  <h3>{item.name}</h3>
+                  <span className={`flag ${item.region === "india" ? "good" : "neutral"}`}>
+                    {item.region === "india" ? "India" : "Worldwide"}
+                  </span>
+                </div>
+                <p className="event-location">
+                  {item.city}, {item.country}
+                  {item.venue ? ` · ${item.venue}` : ""}
+                </p>
+                <p className="status" style={{ marginTop: 6 }}>
+                  <span className={`flag ${timingTone}`} style={{ marginRight: 8 }}>
+                    {timingLabel}
+                  </span>
+                  {formatEventDate(item.start_date)} – {formatEventDate(item.end_date)}
+                </p>
+                <p className="status" style={{ marginTop: 4 }}>
+                  {registrationOpen ? (
+                    <>
+                      {item.cfp_deadline ? `CFP ${formatEventDate(item.cfp_deadline)}` : ""}
+                      {item.cfp_deadline && item.registration_deadline ? " · " : ""}
+                      {item.registration_deadline
+                        ? `Apply by ${formatEventDate(item.registration_deadline)}`
+                        : !item.cfp_deadline
+                          ? "Registration open"
+                          : ""}
+                    </>
+                  ) : (
+                    <span className="event-closed">Registration closed</span>
+                  )}
+                </p>
+                {item.summary && <p className="event-summary">{item.summary}</p>}
+                <div className="chips" style={{ marginTop: 10 }}>
+                  {item.topics.map((tag) => (
+                    <span key={tag} className="chip" style={{ cursor: "default" }}>
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+                <div className="row" style={{ marginTop: 14 }}>
+                  {registrationOpen && (item.apply_url || item.website) ? (
+                    <a
+                      className="primary"
+                      href={item.apply_url || item.website}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Apply now
+                    </a>
+                  ) : (
+                    <span className="event-closed-pill">Registration closed</span>
+                  )}
+                  {item.website && item.website !== item.apply_url && (
+                    <a className="ghost" href={item.website} target="_blank" rel="noreferrer">
+                      Open site
+                    </a>
+                  )}
+                </div>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+      {!busy && items.length === 0 && (
+        <div className="card">
+          <h3>No events match</h3>
+          <p className="status">Try Happening & upcoming, or clear the city and topic filters.</p>
+        </div>
+      )}
+    </>
   );
 }
 

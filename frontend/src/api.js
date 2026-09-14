@@ -67,6 +67,22 @@ export const api = {
     }),
   recent: (limit = 12) => request(`/query/recent?limit=${limit}`),
   historyItem: (id) => request(`/query/history/${id}`),
+  events: (params = {}) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (value != null && value !== "") qs.set(key, String(value));
+    });
+    const suffix = qs.toString() ? `?${qs}` : "";
+    return request(`/events${suffix}`);
+  },
+  workspaceRecents: (limit = 24) => request(`/workspace/recents?limit=${limit}`),
+  savePaperSearch: (payload) =>
+    request("/workspace/paper-searches", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  paperSearchItem: (id) => request(`/workspace/paper-searches/${id}`),
 };
 
 export function pct(value) {

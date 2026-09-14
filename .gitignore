@@ -10,6 +10,7 @@ backend/data/index/
 backend/data/uploads/
 backend/data/results/
 backend/data/auth/
+backend/data/workspace/
 eval/output/
 *.npy
 *.pkl

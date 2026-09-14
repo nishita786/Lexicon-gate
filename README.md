@@ -6,9 +6,11 @@ It will refuse when the sources cannot support a reliable answer. It does not fi
 
 ## What you get
 
-1. **Find papers** — search Semantic Scholar (OpenAlex fallback) and add a paper to your library.
-2. **Library** — your sources (imported papers or uploaded files).
-3. **Ask** — question, one verification badge (Supported / Partially supported / Unsupported), copyable answer with citations, and compact evidence cards.
+1. **Workspace** — research continuity: Ask or Find papers from one search box, with Recents you can reopen and continue from.
+2. **Find papers** — search Semantic Scholar (OpenAlex fallback) and add a paper to your library.
+3. **Library** — your sources (imported papers or uploaded files).
+4. **Ask** — question, one verification badge (Supported / Partially supported / Unsupported), copyable answer with citations, and compact evidence cards.
+5. **Events** — browse India and worldwide tech, IEEE, and research CFP events that are open to apply; apply on the official site.
 
 There is no notebook, no pipeline picker, and no research comparison screen. Evaluation stays in pytest for quality checks.
 
