@@ -29,6 +29,7 @@ class ExtractiveProvider(LLMProvider):
             LLMTask.rewrite_query: self._rewrite_query,
             LLMTask.reflect: self._reflect,
             LLMTask.retrieval_decision: self._retrieval_decision,
+            LLMTask.paper_draft: self._paper_draft,
         }.get(request.task)
 
         if handler is None:  # pragma: no cover - defensive
@@ -110,3 +111,31 @@ class ExtractiveProvider(LLMProvider):
             "needs_retrieval": bool(payload.get("needs_retrieval", True)),
             "reason": payload.get("reason", "document-grounded question"),
         }
+
+    def _paper_draft(self, payload: dict[str, Any]) -> dict[str, Any]:
+        from ...models.query import EvidenceItem
+        from ..paper_drafts.generate import _extractive_skeleton
+
+        evidence: list[EvidenceItem] = []
+        for idx, item in enumerate(payload.get("evidence") or [], start=1):
+            if not isinstance(item, dict):
+                continue
+            evidence.append(
+                EvidenceItem(
+                    citation_id=int(item.get("citation_id") or idx),
+                    chunk_id=str(item.get("chunk_id") or f"e{idx}"),
+                    document_id=str(item.get("document_id") or f"doc{idx}"),
+                    document_name=str(item.get("document_name") or "source"),
+                    text=str(item.get("text") or ""),
+                    title=str(item.get("title") or ""),
+                    authors=list(item.get("authors") or []),
+                    year=item.get("year"),
+                    apa=str(item.get("apa") or ""),
+                )
+            )
+        return _extractive_skeleton(
+            prompt=str(payload.get("query") or ""),
+            evidence=evidence,
+            title_hint=str(payload.get("title_hint") or "") or None,
+            author_name=str(payload.get("author_name") or ""),
+        )

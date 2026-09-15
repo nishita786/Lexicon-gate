@@ -3,12 +3,22 @@ import { api, ms, pct } from "./api";
 import AuthScreen, { Logo } from "./Auth";
 
 const NAV = [
-  ["workspace", "Workspace"],
   ["ask", "Ask"],
   ["find", "Find papers"],
   ["library", "Library"],
   ["compare", "Compare"],
+  ["write", "Write paper"],
   ["events", "Events"],
+];
+
+const PAPER_SECTION_ORDER = [
+  ["abstract", "Abstract"],
+  ["keywords", "Keywords"],
+  ["introduction", "I. Introduction"],
+  ["related_work", "II. Related Work"],
+  ["methodology", "III. Methodology"],
+  ["results", "IV. Results / Discussion"],
+  ["conclusion", "V. Conclusion"],
 ];
 
 const STATUS_COPY = {
@@ -28,13 +38,18 @@ const CLAIM_META = {
 
 export default function App() {
   const [session, setSession] = useState(undefined);
-  const [page, setPage] = useState("workspace");
+  const [page, setPage] = useState("ask");
   const [health, setHealth] = useState(null);
   const [docs, setDocs] = useState([]);
   const [lastResult, setLastResult] = useState(null);
   const [selectedEvidence, setSelectedEvidence] = useState(null);
   const [history, setHistory] = useState([]);
   const [askScope, setAskScope] = useState(null);
+  const [askDraft, setAskDraft] = useState("");
+  const [chatEpoch, setChatEpoch] = useState(0);
+  const [sidebarRecents, setSidebarRecents] = useState([]);
+  const [activeRecentId, setActiveRecentId] = useState(null);
+  const [findRestore, setFindRestore] = useState(null);
   const navRef = useRef(null);
 
   useEffect(() => {
@@ -49,6 +64,16 @@ export default function App() {
     return () => window.removeEventListener("selfrag-auth-lost", onLost);
   }, []);
 
+  const loadSidebarRecents = useCallback(async () => {
+    if (!session) return;
+    try {
+      const payload = await api.workspaceRecents(24);
+      setSidebarRecents(payload.items || []);
+    } catch {
+      /* keep prior list */
+    }
+  }, [session]);
+
   const refresh = useCallback(async () => {
     if (!session) return;
     try {
@@ -60,14 +85,86 @@ export default function App() {
       setHealth(h);
       setDocs(d.documents || []);
       setHistory(Array.isArray(recent) ? recent : []);
+      await loadSidebarRecents();
     } catch (err) {
       console.warn(err);
     }
-  }, [session]);
+  }, [session, loadSidebarRecents]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  function startNewChat() {
+    setLastResult(null);
+    setSelectedEvidence(null);
+    setAskScope(null);
+    setAskDraft("");
+    setActiveRecentId(null);
+    setFindRestore(null);
+    setChatEpoch((n) => n + 1);
+    setPage("ask");
+  }
+
+  async function openSidebarRecent(item) {
+    setActiveRecentId(`${item.kind}:${item.id}`);
+    if (item.kind === "ask") {
+      setAskDraft(item.query || "");
+      setSelectedEvidence(null);
+      setAskScope(null);
+      setChatEpoch((n) => n + 1);
+      try {
+        const saved = await api.historyItem(item.id);
+        setLastResult(saved);
+        setAskDraft(saved.query || item.query || "");
+      } catch {
+        setLastResult(null);
+      }
+      setPage("ask");
+      return;
+    }
+    try {
+      const saved = await api.paperSearchItem(item.id);
+      setFindRestore({
+        id: saved.search_id || item.id,
+        query: saved.query,
+        provider: saved.provider,
+        papers: saved.papers || [],
+      });
+      setPage("find");
+    } catch {
+      setFindRestore(null);
+    }
+  }
+
+  async function deleteSidebarRecent(item, event) {
+    event?.stopPropagation?.();
+    event?.preventDefault?.();
+    const key = `${item.kind}:${item.id}`;
+    try {
+      if (item.kind === "ask") {
+        await api.deleteRecentAsk(item.id);
+      } else {
+        await api.deleteRecentPapers(item.id);
+      }
+      if (activeRecentId === key) {
+        setActiveRecentId(null);
+        if (item.kind === "ask") {
+          setLastResult(null);
+          setSelectedEvidence(null);
+          setAskScope(null);
+          setAskDraft("");
+          setChatEpoch((n) => n + 1);
+        } else {
+          setFindRestore(null);
+        }
+      }
+      setHistory((prev) => (item.kind === "ask" ? prev.filter((h) => h.query_id !== item.id) : prev));
+      await loadSidebarRecents();
+    } catch (err) {
+      console.warn(err);
+    }
+  }
 
   async function logout() {
     try {
@@ -78,8 +175,14 @@ export default function App() {
     setSession(null);
     setDocs([]);
     setLastResult(null);
+    setSelectedEvidence(null);
+    setAskScope(null);
+    setAskDraft("");
     setHistory([]);
-    setPage("workspace");
+    setSidebarRecents([]);
+    setActiveRecentId(null);
+    setFindRestore(null);
+    setPage("ask");
   }
 
   const navIndex = Math.max(0, NAV.findIndex(([id]) => id === page));
@@ -98,7 +201,7 @@ export default function App() {
     place();
     window.addEventListener("resize", place);
     return () => window.removeEventListener("resize", place);
-  }, [page, session]);
+  }, [page, session, sidebarRecents.length]);
 
   if (session === undefined) {
     return (
@@ -128,6 +231,9 @@ export default function App() {
           <Logo size="nav" />
           <p>Question, evidence, verified answer.</p>
         </div>
+        <button type="button" className="new-chat-btn" onClick={startNewChat}>
+          New Chat
+        </button>
         <nav ref={navRef} data-active={page} data-index={navIndex} aria-label="Primary">
           <span className="nav-thumb" aria-hidden="true" />
           {NAV.map(([id, label]) => (
@@ -141,6 +247,42 @@ export default function App() {
             </button>
           ))}
         </nav>
+        <div className="sidebar-recents">
+          <div className="sidebar-recents-label">Recents</div>
+          {!sidebarRecents.length ? (
+            <p className="sidebar-recents-empty">No chats yet. Ask or find papers to continue later.</p>
+          ) : (
+            <ul className="sidebar-recents-list">
+              {sidebarRecents.map((item) => {
+                const key = `${item.kind}:${item.id}`;
+                return (
+                  <li key={key} className="sidebar-recent-row">
+                    <button
+                      type="button"
+                      className={`sidebar-recent-item${activeRecentId === key ? " active" : ""}`}
+                      onClick={() => openSidebarRecent(item)}
+                      title={item.query}
+                    >
+                      <span className={`sidebar-recent-kind ${item.kind}`}>
+                        {item.kind === "ask" ? "Ask" : "Papers"}
+                      </span>
+                      <span className="sidebar-recent-title">{item.query}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="sidebar-recent-delete"
+                      aria-label={`Delete ${item.query || "recent"}`}
+                      title="Delete"
+                      onClick={(event) => deleteSidebarRecent(item, event)}
+                    >
+                      ×
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
         <div className="sidebar-foot">
           <span className="topbar-user">{session.name || session.email}</span>
           <button type="button" className="ghost" onClick={logout}>
@@ -157,12 +299,12 @@ export default function App() {
           </span>
         </header>
         <main className="main" id="main" data-page={page} key={page}>
-          {page === "workspace" && (
-            <UserWorkspace session={session} docs={docs} onLibraryChange={refresh} />
-          )}
           {page === "ask" && (
             <Ask
+              key={chatEpoch}
               docs={docs}
+              query={askDraft}
+              setQuery={setAskDraft}
               result={lastResult}
               setResult={setLastResult}
               selected={selectedEvidence}
@@ -173,7 +315,13 @@ export default function App() {
               onClearScope={() => setAskScope(null)}
             />
           )}
-          {page === "find" && <FindPapers onImported={refresh} />}
+          {page === "find" && (
+            <FindPapers
+              onImported={refresh}
+              onRecentsChange={loadSidebarRecents}
+              restore={findRestore}
+            />
+          )}
           {page === "library" && (
             <Library
               docs={docs}
@@ -185,6 +333,7 @@ export default function App() {
             />
           )}
           {page === "compare" && <ComparePapers docs={docs} />}
+          {page === "write" && <WritePaper docs={docs} health={health} />}
           {page === "events" && <Events />}
         </main>
       </div>
@@ -203,314 +352,6 @@ function formatEventDate(value) {
   } catch {
     return value;
   }
-}
-
-function UserWorkspace({ session, docs, onLibraryChange }) {
-  const [mode, setMode] = useState("ask");
-  const [query, setQuery] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [importing, setImporting] = useState(null);
-  const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
-  const [recents, setRecents] = useState([]);
-  const [askResult, setAskResult] = useState(null);
-  const [selected, setSelected] = useState(null);
-  const [paperResults, setPaperResults] = useState(null);
-  const emptyLibrary = (docs || []).length === 0;
-
-  const loadRecents = useCallback(async () => {
-    try {
-      const payload = await api.workspaceRecents(24);
-      setRecents(payload.items || []);
-    } catch {
-      /* keep prior list */
-    }
-  }, []);
-
-  useEffect(() => {
-    loadRecents();
-  }, [loadRecents]);
-
-  async function submit(event) {
-    event?.preventDefault();
-    const text = query.trim();
-    if (!text || busy) return;
-    if (mode === "ask" && emptyLibrary) {
-      setError("Add sources to your library before asking.");
-      return;
-    }
-    setBusy(true);
-    setError("");
-    setMessage("");
-    setSelected(null);
-    try {
-      if (mode === "ask") {
-        const payload = await api.query({ query: text, include_trace: true });
-        setAskResult(payload);
-        setPaperResults(null);
-        await onLibraryChange?.();
-        await loadRecents();
-      } else {
-        const payload = await api.searchPapers(text);
-        setPaperResults(payload);
-        setAskResult(null);
-        await api.savePaperSearch({
-          query: text,
-          provider: payload.provider || "unknown",
-          papers: (payload.papers || []).slice(0, 20).map((paper) => ({
-            paper_id: paper.paper_id,
-            title: paper.title,
-            authors: paper.authors || [],
-            year: paper.year,
-            source: paper.source,
-            url: paper.url,
-            pdf_url: paper.pdf_url,
-            doi: paper.doi,
-            venue: paper.venue,
-            abstract: paper.abstract,
-            open_access: paper.open_access,
-            citation_count: paper.citation_count,
-          })),
-        });
-        if (!payload.papers?.length) setMessage("No papers found. Try a more specific title or author.");
-        await loadRecents();
-      }
-    } catch (err) {
-      setError(err.message || "Search failed.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function openRecent(item) {
-    setError("");
-    setMessage("");
-    setSelected(null);
-    setQuery(item.query || "");
-    if (item.kind === "ask") {
-      setMode("ask");
-      try {
-        const saved = await api.historyItem(item.id);
-        setAskResult(saved);
-        setPaperResults(null);
-      } catch (err) {
-        setError(err.message || "Could not restore that Ask result.");
-      }
-      return;
-    }
-    setMode("papers");
-    try {
-      const saved = await api.paperSearchItem(item.id);
-      setPaperResults({
-        query: saved.query,
-        provider: saved.provider,
-        papers: saved.papers || [],
-      });
-      setAskResult(null);
-    } catch (err) {
-      setError(err.message || "Could not restore that paper search.");
-    }
-  }
-
-  async function addPaper(paper) {
-    setImporting(paper.paper_id);
-    setError("");
-    setMessage("");
-    try {
-      const result = await api.importPaper({
-        paper_id: paper.paper_id,
-        source: paper.source,
-        title: paper.title,
-        authors: paper.authors,
-        year: paper.year,
-        venue: paper.venue,
-        abstract: paper.abstract,
-        doi: paper.doi,
-        pdf_url: paper.pdf_url,
-        url: paper.url,
-      });
-      await onLibraryChange();
-      if (result.ingested === "pdf") {
-        setMessage(`Added “${paper.title}”. Full PDF indexed.`);
-      } else {
-        setMessage(
-          `Added “${paper.title}”. Could not fetch a PDF. Abstract saved — use Open paper for the official copy.`
-        );
-      }
-      if (result.warnings?.length) setError(result.warnings.join(" · "));
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setImporting(null);
-    }
-  }
-
-  const askBadge = askResult ? verificationBadge(askResult) : null;
-
-  return (
-    <>
-      <div className="page-title">
-        <div>
-          <h2>Workspace</h2>
-          <p>
-            Welcome{session?.name ? `, ${session.name}` : ""}. Keep past Ask and paper searches in
-            Recents, reopen them, and run the next search here.
-          </p>
-        </div>
-      </div>
-
-      <p className="workspace-library-hint status">
-        {(docs || []).length
-          ? `${docs.length} source${docs.length === 1 ? "" : "s"} in your library`
-          : "Library is empty — Find papers or upload in Library, then Ask."}
-      </p>
-
-      <form className="card workspace-search" onSubmit={submit}>
-        <div className="workspace-mode-chips" role="group" aria-label="Search mode">
-          <button
-            type="button"
-            className={`chip${mode === "ask" ? " active" : ""}`}
-            onClick={() => setMode("ask")}
-          >
-            Ask
-          </button>
-          <button
-            type="button"
-            className={`chip${mode === "papers" ? " active" : ""}`}
-            onClick={() => setMode("papers")}
-          >
-            Find papers
-          </button>
-        </div>
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder={
-            mode === "ask"
-              ? emptyLibrary
-                ? "Add library sources first, then ask…"
-                : "Ask a question about your sources…"
-              : "Paper title, topic, or author…"
-          }
-          disabled={mode === "ask" && emptyLibrary}
-        />
-        <div className="row" style={{ marginTop: 10 }}>
-          <button
-            className={`primary${busy ? " is-busy" : ""}`}
-            type="submit"
-            disabled={busy || !query.trim() || (mode === "ask" && emptyLibrary)}
-          >
-            {busy ? (mode === "ask" ? "Checking sources…" : "Searching…") : mode === "ask" ? "Ask" : "Search"}
-          </button>
-          {paperResults?.provider && mode === "papers" && (
-            <span className="status">Results from {String(paperResults.provider).replaceAll("_", " ")}</span>
-          )}
-        </div>
-      </form>
-
-      {error && <p className="error">{error}</p>}
-      {message && <p className="status">{message}</p>}
-
-      <div className="workspace-panels">
-        <div className="card">
-          <h3>Recents</h3>
-          {!recents.length ? (
-            <p className="status" style={{ marginTop: 0 }}>
-              No searches yet. Ask a question or find papers above — they stay here so you can continue.
-            </p>
-          ) : (
-            <ul className="plain-list history">
-              {recents.map((item) => (
-                <li key={`${item.kind}-${item.id}`}>
-                  <button type="button" className="history-item" onClick={() => openRecent(item)}>
-                    <span className="workspace-recent-main">
-                      <span className={`workspace-kind ${item.kind}`}>
-                        {item.kind === "ask" ? "Ask" : "Papers"}
-                      </span>
-                      <span>{item.query}</span>
-                    </span>
-                    <span className="status">
-                      {item.kind === "ask"
-                        ? `${(STATUS_COPY[item.status] || {}).label || item.status || "Ask"}${
-                            item.confidence != null ? ` · ${pct(item.confidence)}` : ""
-                          }`
-                        : `${item.paper_count ?? 0} paper${(item.paper_count ?? 0) === 1 ? "" : "s"}`}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        <div className="workspace-active">
-          {askResult && (
-            <div className="card">
-              <h3>Ask result</h3>
-              {askBadge && (
-                <div className="verify-block" style={{ marginBottom: 10 }}>
-                  <span className={`flag ${askBadge.tone}`}>{askBadge.label}</span>
-                </div>
-              )}
-              <AnswerView result={askResult} docs={docs} selected={selected} onSelect={setSelected} />
-            </div>
-          )}
-
-          {paperResults && (
-            <div className="workspace-paper-hits">
-              <h3 className="workspace-active-heading">Paper hits</h3>
-              {!(paperResults.papers || []).length ? (
-                <p className="status">No papers in this search.</p>
-              ) : (
-                (paperResults.papers || []).map((paper) => (
-                  <div key={`${paper.source}-${paper.paper_id}`} className="card paper-row">
-                    <div>
-                      <strong>{paper.title}</strong>
-                      <div className="status" style={{ margin: "4px 0 0" }}>
-                        {(paper.authors || []).slice(0, 8).join(", ") || "Unknown author"}
-                        {paper.year ? ` · ${paper.year}` : ""}
-                        {paper.venue ? ` · ${paper.venue}` : ""}
-                      </div>
-                      {paper.abstract && (
-                        <p className="cite-snippet">
-                          {paper.abstract.slice(0, 280)}
-                          {paper.abstract.length > 280 ? "…" : ""}
-                        </p>
-                      )}
-                    </div>
-                    <div className="paper-actions">
-                      {paperHref(paper) && (
-                        <a className="ghost" href={paperHref(paper)} target="_blank" rel="noreferrer">
-                          Open paper
-                        </a>
-                      )}
-                      <button
-                        type="button"
-                        className="primary"
-                        disabled={importing === paper.paper_id}
-                        onClick={() => addPaper(paper)}
-                      >
-                        {importing === paper.paper_id ? "Adding…" : "Add to library"}
-                      </button>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          )}
-
-          {!askResult && !paperResults && (
-            <div className="card">
-              <h3>Active research</h3>
-              <p className="status" style={{ marginTop: 0 }}>
-                Run a search or open a recent item to continue here.
-              </p>
-            </div>
-          )}
-        </div>
-      </div>
-    </>
-  );
 }
 
 const EVENT_TYPE_LABELS = {
@@ -777,8 +618,7 @@ function Events() {
   );
 }
 
-function Ask({ docs, result, setResult, selected, setSelected, history, onQueried, askScope, onClearScope }) {
-  const [query, setQuery] = useState("");
+function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, history, onQueried, askScope, onClearScope }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const emptyLibrary = docs.length === 0;
@@ -895,13 +735,29 @@ function paperHref(paper) {
   return paper.url || paper.pdf_url || "";
 }
 
-function FindPapers({ onImported }) {
-  const [query, setQuery] = useState("");
+function FindPapers({ onImported, onRecentsChange, restore }) {
+  const [query, setQuery] = useState(restore?.query || "");
   const [busy, setBusy] = useState(false);
   const [importing, setImporting] = useState(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [results, setResults] = useState(null);
+  const [results, setResults] = useState(
+    restore
+      ? { query: restore.query, provider: restore.provider, papers: restore.papers || [] }
+      : null
+  );
+
+  useEffect(() => {
+    if (!restore?.id) return;
+    setQuery(restore.query || "");
+    setResults({
+      query: restore.query,
+      provider: restore.provider,
+      papers: restore.papers || [],
+    });
+    setError("");
+    setMessage("");
+  }, [restore?.id]);
 
   async function search(event) {
     event?.preventDefault();
@@ -913,6 +769,25 @@ function FindPapers({ onImported }) {
     try {
       const payload = await api.searchPapers(text);
       setResults(payload);
+      await api.savePaperSearch({
+        query: text,
+        provider: payload.provider || "unknown",
+        papers: (payload.papers || []).slice(0, 20).map((paper) => ({
+          paper_id: paper.paper_id,
+          title: paper.title,
+          authors: paper.authors || [],
+          year: paper.year,
+          source: paper.source,
+          url: paper.url,
+          pdf_url: paper.pdf_url,
+          doi: paper.doi,
+          venue: paper.venue,
+          abstract: paper.abstract,
+          open_access: paper.open_access,
+          citation_count: paper.citation_count,
+        })),
+      });
+      await onRecentsChange?.();
       if (!payload.papers?.length) setMessage("No papers found. Try a more specific title or author.");
     } catch (err) {
       setError(err.message);
@@ -1287,6 +1162,410 @@ function ComparePapers({ docs }) {
           </p>
         </div>
       )}
+    </>
+  );
+}
+
+function WritePaper({ docs, health }) {
+  const [prompt, setPrompt] = useState("");
+  const [titleHint, setTitleHint] = useState("");
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [draft, setDraft] = useState(null);
+  const [past, setPast] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [exporting, setExporting] = useState("");
+  const [error, setError] = useState("");
+  const [savedAt, setSavedAt] = useState(null);
+  const [previewHtml, setPreviewHtml] = useState("");
+  const [previewSrc, setPreviewSrc] = useState("");
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [editorsOpen, setEditorsOpen] = useState(false);
+  const saveTimer = useRef(null);
+
+  const llmName = health?.llm?.name || health?.llm_provider?.name || "";
+  const llmHint =
+    llmName === "extractive" || health?.llm?.deterministic
+      ? "Offline extractive mode: drafts are structured skeletons from your prompt and selected Library passages."
+      : llmName
+        ? `Generation uses ${llmName}${health?.llm?.model ? ` (${health.llm.model})` : ""}.`
+        : "Generation uses the configured LLM provider.";
+
+  const loadPast = useCallback(async () => {
+    try {
+      const payload = await api.listPaperDrafts();
+      setPast(payload.drafts || []);
+    } catch {
+      /* ignore list errors on mount */
+    }
+  }, []);
+
+  const refreshPreview = useCallback(async (draftId) => {
+    if (!draftId) {
+      setPreviewHtml("");
+      return;
+    }
+    setPreviewBusy(true);
+    try {
+      const html = await api.previewPaperDraft(draftId);
+      setPreviewHtml(html);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setPreviewBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadPast();
+  }, [loadPast]);
+
+  useEffect(() => {
+    if (!draft?.draft_id) {
+      setPreviewHtml("");
+      return;
+    }
+    refreshPreview(draft.draft_id);
+  }, [draft?.draft_id, draft?.updated_at, refreshPreview]);
+
+  useEffect(() => {
+    if (!previewHtml) {
+      setPreviewSrc("");
+      return undefined;
+    }
+    const blob = new Blob([previewHtml], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    setPreviewSrc(url);
+    return () => {
+      URL.revokeObjectURL(url);
+    };
+  }, [previewHtml]);
+
+  useEffect(() => {
+    return () => {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+    };
+  }, []);
+
+  function toggleSource(id) {
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  async function generate() {
+    const text = prompt.trim();
+    if (!text) {
+      setError("Enter a topic or prompt for the paper.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const created = await api.createPaperDraft({
+        prompt: text,
+        format: "ieee_conference",
+        document_ids: selectedIds,
+        title_hint: titleHint.trim() || undefined,
+      });
+      setDraft(created);
+      setSavedAt(created.updated_at);
+      setEditorsOpen(false);
+      await loadPast();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function scheduleSave(next) {
+    setDraft(next);
+    if (!next?.draft_id) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      setSaving(true);
+      setError("");
+      try {
+        const updated = await api.updatePaperDraft(next.draft_id, {
+          title: next.title,
+          authors: next.authors,
+          sections: next.sections,
+          references: next.references,
+        });
+        setDraft(updated);
+        setSavedAt(updated.updated_at);
+        await loadPast();
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setSaving(false);
+      }
+    }, 700);
+  }
+
+  function patchField(field, value) {
+    if (!draft) return;
+    scheduleSave({ ...draft, [field]: value });
+  }
+
+  function patchSection(key, value) {
+    if (!draft) return;
+    scheduleSave({
+      ...draft,
+      sections: { ...(draft.sections || {}), [key]: value },
+    });
+  }
+
+  function patchReferences(text) {
+    if (!draft) return;
+    const references = text
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    scheduleSave({ ...draft, references });
+  }
+
+  async function saveNow() {
+    if (!draft?.draft_id) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    setSaving(true);
+    setError("");
+    try {
+      const updated = await api.updatePaperDraft(draft.draft_id, {
+        title: draft.title,
+        authors: draft.authors,
+        sections: draft.sections,
+        references: draft.references,
+      });
+      setDraft(updated);
+      setSavedAt(updated.updated_at);
+      await loadPast();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function download(format) {
+    if (!draft?.draft_id) return;
+    setExporting(format);
+    setError("");
+    try {
+      const { blob, filename } = await api.exportPaperDraft(draft.draft_id, format);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setExporting("");
+    }
+  }
+
+  async function openPast(id) {
+    setError("");
+    try {
+      const item = await api.getPaperDraft(id);
+      setDraft(item);
+      setPrompt(item.prompt || "");
+      setSelectedIds(item.document_ids || []);
+      setSavedAt(item.updated_at);
+      setEditorsOpen(false);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  return (
+    <>
+      <div className="page-title">
+        <div>
+          <h2>Write paper</h2>
+          <p>
+            Prompt on the left; live IEEE two-column paper on the right. Edit sections, then download DOCX or PDF.
+          </p>
+        </div>
+      </div>
+
+      <div className="write-split">
+        <div className="write-split-left">
+          <div className="card write-paper-setup">
+            <label>
+              Paper topic / prompt
+              <textarea
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                placeholder="e.g. Deep learning for image recognition"
+                rows={4}
+              />
+            </label>
+            <div className="write-paper-meta">
+              <label>
+                Title hint (optional)
+                <input
+                  value={titleHint}
+                  onChange={(e) => setTitleHint(e.target.value)}
+                  placeholder="Suggested manuscript title"
+                />
+              </label>
+              <div className="write-format-chip">
+                <span className="chip active">IEEE conference</span>
+              </div>
+            </div>
+            <div className="write-sources">
+              <div className="write-sources-head">
+                <strong>Library sources</strong>
+                <span className="status" style={{ margin: 0 }}>
+                  Optional grounding
+                </span>
+              </div>
+              {!docs.length ? (
+                <p className="status">No Library sources yet — exploratory outline with [Source needed].</p>
+              ) : (
+                <div className="chips write-source-chips">
+                  {docs.map((doc) => {
+                    const id = doc.document_id;
+                    const active = selectedIds.includes(id);
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        className={`chip${active ? " active" : ""}`}
+                        onClick={() => toggleSource(id)}
+                      >
+                        {doc.title || doc.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            <p className="status write-llm-hint">{llmHint}</p>
+            {error && <p className="error">{error}</p>}
+            <div className="actions">
+              <button type="button" className="primary" disabled={busy || !prompt.trim()} onClick={generate}>
+                {busy ? "Generating…" : draft ? "Regenerate" : "Generate paper"}
+              </button>
+            </div>
+          </div>
+
+          {past.length > 0 && (
+            <div className="card write-past-card">
+              <h3>Recent drafts</h3>
+              <ul className="write-past-list">
+                {past.slice(0, 6).map((item) => (
+                  <li key={item.draft_id}>
+                    <button type="button" className="ghost write-past-item" onClick={() => openPast(item.draft_id)}>
+                      <strong>{item.title || "Untitled"}</strong>
+                      <span className="status">{item.grounded ? "Grounded" : "Outline"}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {draft && (
+            <div className="card write-paper-editor">
+              <div className="write-editor-bar">
+                <div>
+                  <h3 style={{ margin: 0 }}>Draft controls</h3>
+                  <p className="status" style={{ margin: "4px 0 0" }}>
+                    {draft.grounded ? "Grounded" : "Exploratory outline"}
+                    {saving ? " · Saving…" : savedAt ? " · Saved" : ""}
+                  </p>
+                </div>
+                <div className="actions">
+                  <button type="button" className="ghost" disabled={saving} onClick={saveNow}>
+                    Save
+                  </button>
+                  <button type="button" disabled={!!exporting} onClick={() => download("docx")}>
+                    {exporting === "docx" ? "DOCX…" : "DOCX"}
+                  </button>
+                  <button type="button" disabled={!!exporting} onClick={() => download("pdf")}>
+                    {exporting === "pdf" ? "PDF…" : "PDF"}
+                  </button>
+                </div>
+              </div>
+              {(draft.notes || []).length > 0 && (
+                <ul className="write-notes">
+                  {draft.notes.map((note) => (
+                    <li key={note}>{note}</li>
+                  ))}
+                </ul>
+              )}
+              <label>
+                Title
+                <input value={draft.title || ""} onChange={(e) => patchField("title", e.target.value)} />
+              </label>
+              <label>
+                Authors
+                <input value={draft.authors || ""} onChange={(e) => patchField("authors", e.target.value)} />
+              </label>
+              <button
+                type="button"
+                className="ghost write-editors-toggle"
+                onClick={() => setEditorsOpen((o) => !o)}
+              >
+                {editorsOpen ? "Hide section editors" : "Edit sections"}
+              </button>
+              {editorsOpen && (
+                <div className="write-section-editors">
+                  {PAPER_SECTION_ORDER.map(([key, label]) => (
+                    <label key={key}>
+                      {label}
+                      <textarea
+                        className="write-section"
+                        rows={key === "keywords" ? 2 : 5}
+                        value={(draft.sections && draft.sections[key]) || ""}
+                        onChange={(e) => patchSection(key, e.target.value)}
+                      />
+                    </label>
+                  ))}
+                  <label>
+                    References (one per line)
+                    <textarea
+                      className="write-section"
+                      rows={4}
+                      value={(draft.references || []).join("\n")}
+                      onChange={(e) => patchReferences(e.target.value)}
+                    />
+                  </label>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="write-split-right">
+          <div className="write-preview-frame card">
+            <div className="write-preview-bar">
+              <span className="write-preview-label">IEEE conference preview</span>
+              {previewBusy && <span className="status">Updating…</span>}
+            </div>
+            {!draft ? (
+              <div className="write-preview-empty">
+                <p>Generate a paper to see the live IEEE two-column layout here.</p>
+              </div>
+            ) : previewSrc ? (
+              <iframe
+                className="write-preview-iframe"
+                title="IEEE paper preview"
+                src={previewSrc}
+              />
+            ) : (
+              <div className="write-preview-empty">
+                <p>{previewBusy ? "Building preview…" : "Preview unavailable."}</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </>
   );
 }

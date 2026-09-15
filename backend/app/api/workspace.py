@@ -110,3 +110,17 @@ def get_paper_search(search_id: str, request: Request) -> PaperSearchRecord:
     if record is None:
         raise HTTPException(status_code=404, detail="Paper search not found.")
     return record
+
+
+@router.delete("/recents/ask/{query_id}", status_code=204)
+def delete_ask_recent(query_id: str, request: Request) -> None:
+    _require_user(request)
+    if not history.delete(query_id):
+        raise HTTPException(status_code=404, detail="Ask recent not found.")
+
+
+@router.delete("/recents/papers/{search_id}", status_code=204)
+def delete_papers_recent(search_id: str, request: Request) -> None:
+    user = _require_user(request)
+    if not paper_searches.delete_paper_search(str(user["user_id"]), search_id):
+        raise HTTPException(status_code=404, detail="Paper search not found.")

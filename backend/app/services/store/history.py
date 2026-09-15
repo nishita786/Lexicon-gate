@@ -30,5 +30,12 @@ class QueryHistory:
             values = list(self._items.values())
         return list(reversed(values))[:limit]
 
+    def delete(self, query_id: str) -> bool:
+        with self._lock:
+            if query_id not in self._items:
+                return False
+            del self._items[query_id]
+            return True
+
 
 history = QueryHistory()

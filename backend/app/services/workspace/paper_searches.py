@@ -100,3 +100,13 @@ def get_paper_search(user_id: str, search_id: str) -> PaperSearchRecord | None:
             except Exception:
                 return None
     return None
+
+
+def delete_paper_search(user_id: str, search_id: str) -> bool:
+    with _LOCK:
+        items = _read(user_id)
+        kept = [raw for raw in items if str(raw.get("search_id")) != search_id]
+        if len(kept) == len(items):
+            return False
+        _write(user_id, kept)
+        return True

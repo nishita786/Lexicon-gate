@@ -29,6 +29,7 @@ STRUCTURED_TASKS = {
     LLMTask.rewrite_query,
     LLMTask.reflect,
     LLMTask.retrieval_decision,
+    LLMTask.paper_draft,
 }
 
 

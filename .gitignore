@@ -11,6 +11,7 @@ backend/data/uploads/
 backend/data/results/
 backend/data/auth/
 backend/data/workspace/
+backend/data/paper_drafts/
 eval/output/
 *.npy
 *.pkl
