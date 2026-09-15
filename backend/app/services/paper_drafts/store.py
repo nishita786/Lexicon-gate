@@ -9,7 +9,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ...config import BACKEND_ROOT
-from ...models.paper_drafts import PaperDraft, empty_sections, normalize_sections
+from ...models.paper_drafts import (
+    PaperDraft,
+    PaperFigure,
+    empty_sections,
+    normalize_figures,
+    normalize_sections,
+)
 
 _ROOT = BACKEND_ROOT / "data" / "paper_drafts"
 _LOCK = threading.RLock()
@@ -55,11 +61,13 @@ def create_draft(
     authors: str = "",
     sections: dict[str, str] | None = None,
     references: list[str] | None = None,
+    figures: list[PaperFigure] | list[dict] | None = None,
     document_ids: list[str] | None = None,
     status: str = "ready",
     grounded: bool = False,
     provider: str = "",
     notes: list[str] | None = None,
+    generation_steps: list[str] | None = None,
     paper_format: str = "ieee_conference",
 ) -> PaperDraft:
     stamp = _now()
@@ -72,11 +80,13 @@ def create_draft(
         authors=(authors or "").strip(),
         sections=normalize_sections(sections) if sections else empty_sections(),
         references=[str(r).strip() for r in (references or []) if str(r).strip()],
+        figures=normalize_figures(figures),
         document_ids=list(document_ids or []),
         status=status,
         grounded=grounded,
         provider=provider or "",
         notes=list(notes or []),
+        generation_steps=list(generation_steps or []),
         created_at=stamp,
         updated_at=stamp,
     )
@@ -122,6 +132,7 @@ def update_draft(
     authors: str | None = None,
     sections: dict[str, str] | None = None,
     references: list[str] | None = None,
+    figures: list[PaperFigure] | list[dict] | None = None,
 ) -> PaperDraft | None:
     with _LOCK:
         items = _read(user_id)
@@ -142,6 +153,8 @@ def update_draft(
                 draft.sections = normalize_sections(merged)
             if references is not None:
                 draft.references = [str(r).strip() for r in references if str(r).strip()]
+            if figures is not None:
+                draft.figures = normalize_figures(figures)
             draft.updated_at = _now()
             items[idx] = draft.model_dump(mode="json")
             _write(user_id, items)

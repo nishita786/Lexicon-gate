@@ -28,6 +28,23 @@ SECTION_LABELS: dict[str, str] = {
     "conclusion": "V. Conclusion",
 }
 
+BODY_SECTIONS: tuple[str, ...] = (
+    "introduction",
+    "related_work",
+    "methodology",
+    "results",
+)
+
+
+class PaperFigure(BaseModel):
+    figure_id: str = ""
+    caption: str = ""
+    kind: str = "pipeline"  # pipeline | architecture | comparison
+    section_anchor: str = "methodology"
+    svg: str = ""
+    nodes: list[str] = Field(default_factory=list)
+    edges: list[list[str]] = Field(default_factory=list)
+
 
 class PaperDraftRequest(BaseModel):
     prompt: str = Field(min_length=1)
@@ -41,6 +58,7 @@ class PaperDraftUpdate(BaseModel):
     authors: str | None = None
     sections: dict[str, str] | None = None
     references: list[str] | None = None
+    figures: list[PaperFigure] | None = None
 
 
 class PaperDraft(BaseModel):
@@ -52,11 +70,13 @@ class PaperDraft(BaseModel):
     authors: str = ""
     sections: dict[str, str] = Field(default_factory=dict)
     references: list[str] = Field(default_factory=list)
+    figures: list[PaperFigure] = Field(default_factory=list)
     document_ids: list[str] = Field(default_factory=list)
     status: str = "ready"
     grounded: bool = False
     provider: str = ""
     notes: list[str] = Field(default_factory=list)
+    generation_steps: list[str] = Field(default_factory=list)
     created_at: str = ""
     updated_at: str = ""
 
@@ -79,4 +99,24 @@ def normalize_sections(raw: dict[str, Any] | None) -> dict[str, str]:
         if value is None:
             continue
         out[key] = str(value).strip()
+    return out
+
+
+def normalize_figures(raw: list[Any] | None) -> list[PaperFigure]:
+    out: list[PaperFigure] = []
+    if not raw:
+        return out
+    for idx, item in enumerate(raw, start=1):
+        if isinstance(item, PaperFigure):
+            fig = item
+        elif isinstance(item, dict):
+            try:
+                fig = PaperFigure.model_validate(item)
+            except Exception:
+                continue
+        else:
+            continue
+        if not fig.figure_id:
+            fig.figure_id = f"fig{idx}"
+        out.append(fig)
     return out

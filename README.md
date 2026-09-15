@@ -10,7 +10,7 @@ It will refuse when the sources cannot support a reliable answer. It does not fi
 2. **Find papers** — search Semantic Scholar (OpenAlex fallback) and add a paper to your library.
 3. **Library** — your sources (imported papers or uploaded files).
 4. **Compare** — side-by-side structure across papers in your library.
-5. **Write paper** — Gemini-style split: prompt on the left, live **IEEE two-column** conference preview on the right; edit sections, download DOCX or PDF. Optionally ground in Library sources. Without sources the draft is an exploratory outline with `[Source needed]` placeholders — not fabricated citations. Preview/exports are drafting layouts, not camera-ready Xplore uploads.
+5. **Write paper** — Gemini-style split: topic + **2–3 Library reference papers** on the left; live **IEEE two-column** preview on the right with elaborated sections, citations, and **original SVG figures** (not scraped from PDFs). With **OpenAI or Ollama**, multi-pass drafting targets **~10+ IEEE two-column pages**; extractive/offline mode stays a short skeleton. AI drafts need human review — not a guarantee of conference acceptance. Without sources, exploratory outlines use `[Source needed]`.
 6. **Events** — browse India and worldwide tech, IEEE, and research CFP events that are open to apply; apply on the official site.
 
 There is no notebook, no pipeline picker, and no research comparison screen. Evaluation stays in pytest for quality checks.

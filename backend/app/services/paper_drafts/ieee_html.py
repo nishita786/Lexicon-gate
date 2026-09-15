@@ -60,9 +60,15 @@ def render_ieee_html(draft: PaperDraft, *, mode: HtmlMode = "preview") -> str:
 def _column_body_html(draft: PaperDraft) -> str:
     parts: list[str] = []
     sections = draft.sections or {}
+    figs_by_anchor: dict[str, list] = {}
+    for fig in draft.figures or []:
+        anchor = fig.section_anchor if fig.section_anchor in _COLUMN_KEYS else "methodology"
+        figs_by_anchor.setdefault(anchor, []).append(fig)
     for key in _COLUMN_KEYS:
         label = SECTION_LABELS.get(key, key.title())
         parts.append(_section_block(label, sections.get(key) or ""))
+        for fig in figs_by_anchor.get(key, []):
+            parts.append(_figure_block(fig))
     if draft.references:
         parts.append('<h2 class="sec">References</h2>')
         for ref in draft.references:
@@ -74,11 +80,17 @@ def _split_body_columns(draft: PaperDraft) -> tuple[str, str]:
     """Balance section blocks across two columns for PDF table layout."""
     blocks: list[tuple[int, str]] = []
     sections = draft.sections or {}
+    figs_by_anchor: dict[str, list] = {}
+    for fig in draft.figures or []:
+        anchor = fig.section_anchor if fig.section_anchor in _COLUMN_KEYS else "methodology"
+        figs_by_anchor.setdefault(anchor, []).append(fig)
     for key in _COLUMN_KEYS:
         label = SECTION_LABELS.get(key, key.title())
         body = sections.get(key) or ""
         html = _section_block(label, body)
-        blocks.append((len(body), html))
+        for fig in figs_by_anchor.get(key, []):
+            html += _figure_block(fig)
+        blocks.append((len(body) + 200 * len(figs_by_anchor.get(key, [])), html))
     if draft.references:
         refs = ['<h2 class="sec">References</h2>']
         total = 0
@@ -102,6 +114,18 @@ def _split_body_columns(draft: PaperDraft) -> tuple[str, str]:
     if not right and len(left) > 1:
         right.append(left.pop())
     return "".join(left), "".join(right)
+
+
+def _figure_block(fig) -> str:
+    svg = fig.svg or ""
+    # xhtml2pdf handles simple SVG poorly; wrap for preview; pdf mode keeps svg if present
+    caption = escape(fig.caption or f"Figure {fig.figure_id}")
+    return (
+        f'<div class="figure" id="{escape(fig.figure_id)}">'
+        f"{svg}"
+        f'<p class="figcap">{caption}</p>'
+        f"</div>"
+    )
 
 
 def _section_block(
@@ -179,6 +203,18 @@ html, body { margin: 0; padding: 0; background: #e8e8e8; }
 }
 .twocol p { text-align: justify; margin: 0 0 6px; font-size: 10pt; }
 .ref { font-size: 8pt; margin: 0 0 4px; text-align: left; }
+.figure {
+  margin: 10px 0 12px;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.figure svg { display: block; width: 100%; height: auto; }
+.figcap {
+  font-size: 8pt;
+  text-align: center;
+  margin: 4px 0 0;
+  font-style: italic;
+}
 .footnote {
   margin-top: 18px;
   padding-top: 8px;
@@ -234,6 +270,8 @@ td.gutter { width: 4%; }
 }
 .col p { text-align: justify; margin: 0 0 5px; font-size: 9pt; }
 .ref { font-size: 8pt; margin: 0 0 3px; }
+.figure { margin: 8px 0 10px; }
+.figcap { font-size: 8pt; text-align: center; font-style: italic; margin: 3px 0 0; }
 .footnote {
   margin-top: 12px;
   padding-top: 6px;

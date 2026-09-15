@@ -1173,6 +1173,7 @@ function WritePaper({ docs, health }) {
   const [draft, setDraft] = useState(null);
   const [past, setPast] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [progressMsg, setProgressMsg] = useState("");
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState("");
   const [error, setError] = useState("");
@@ -1182,14 +1183,25 @@ function WritePaper({ docs, health }) {
   const [previewBusy, setPreviewBusy] = useState(false);
   const [editorsOpen, setEditorsOpen] = useState(false);
   const saveTimer = useRef(null);
+  const progressTimer = useRef(null);
+
+  const GEN_STEPS = [
+    "Retrieving Library evidence…",
+    "Outlining manuscript and figures…",
+    "Writing Introduction…",
+    "Writing Related Work…",
+    "Writing Methodology…",
+    "Writing Results…",
+    "Writing Abstract and Conclusion…",
+    "Drawing original figures…",
+  ];
 
   const llmName = health?.llm?.name || health?.llm_provider?.name || "";
-  const llmHint =
-    llmName === "extractive" || health?.llm?.deterministic
-      ? "Offline extractive mode: drafts are structured skeletons from your prompt and selected Library passages."
-      : llmName
-        ? `Generation uses ${llmName}${health?.llm?.model ? ` (${health.llm.model})` : ""}.`
-        : "Generation uses the configured LLM provider.";
+  const llmModel = health?.llm?.model || health?.llm_provider?.model || "";
+  const isExtractive = llmName === "extractive" || health?.llm?.deterministic;
+  const providerLabel = llmName
+    ? `${llmName}${llmModel ? ` · ${llmModel}` : ""}`
+    : "unknown";
 
   const loadPast = useCallback(async () => {
     try {
@@ -1244,11 +1256,27 @@ function WritePaper({ docs, health }) {
   useEffect(() => {
     return () => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
+      if (progressTimer.current) clearInterval(progressTimer.current);
     };
   }, []);
 
   function toggleSource(id) {
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  function startProgressCycle() {
+    let i = 0;
+    setProgressMsg(GEN_STEPS[0]);
+    if (progressTimer.current) clearInterval(progressTimer.current);
+    progressTimer.current = setInterval(() => {
+      i = Math.min(i + 1, GEN_STEPS.length - 1);
+      setProgressMsg(GEN_STEPS[i]);
+    }, 2200);
+  }
+
+  function stopProgressCycle() {
+    if (progressTimer.current) clearInterval(progressTimer.current);
+    progressTimer.current = null;
   }
 
   async function generate() {
@@ -1257,8 +1285,12 @@ function WritePaper({ docs, health }) {
       setError("Enter a topic or prompt for the paper.");
       return;
     }
+    if (selectedIds.length < 2) {
+      setError("");
+    }
     setBusy(true);
     setError("");
+    startProgressCycle();
     try {
       const created = await api.createPaperDraft({
         prompt: text,
@@ -1269,10 +1301,14 @@ function WritePaper({ docs, health }) {
       setDraft(created);
       setSavedAt(created.updated_at);
       setEditorsOpen(false);
+      const last = (created.generation_steps || []).slice(-1)[0];
+      setProgressMsg(last || "Draft ready.");
       await loadPast();
     } catch (err) {
       setError(err.message);
+      setProgressMsg("");
     } finally {
+      stopProgressCycle();
       setBusy(false);
     }
   }
@@ -1387,7 +1423,7 @@ function WritePaper({ docs, health }) {
         <div>
           <h2>Write paper</h2>
           <p>
-            Prompt on the left; live IEEE two-column paper on the right. Edit sections, then download DOCX or PDF.
+            Topic on the left; live IEEE two-column manuscript on the right. Select 2–3 Library papers for grounded citations, then generate an elaborated draft with original figures.
           </p>
         </div>
       </div>
@@ -1400,7 +1436,7 @@ function WritePaper({ docs, health }) {
               <textarea
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
-                placeholder="e.g. Deep learning for image recognition"
+                placeholder="e.g. Self-RAG: retrieval-augmented generation with self-reflection"
                 rows={4}
               />
             </label>
@@ -1419,13 +1455,15 @@ function WritePaper({ docs, health }) {
             </div>
             <div className="write-sources">
               <div className="write-sources-head">
-                <strong>Library sources</strong>
+                <strong>Reference papers (Library)</strong>
                 <span className="status" style={{ margin: 0 }}>
-                  Optional grounding
+                  Select 2–3 for best quality
                 </span>
               </div>
               {!docs.length ? (
-                <p className="status">No Library sources yet — exploratory outline with [Source needed].</p>
+                <p className="status">
+                  Add papers via Find papers or Library first, then select them here for grounded citations.
+                </p>
               ) : (
                 <div className="chips write-source-chips">
                   {docs.map((doc) => {
@@ -1444,14 +1482,51 @@ function WritePaper({ docs, health }) {
                   })}
                 </div>
               )}
+              {selectedIds.length > 0 && selectedIds.length < 2 && (
+                <p className="status">Tip: selecting at least two papers improves related work and citations.</p>
+              )}
             </div>
-            <p className="status write-llm-hint">{llmHint}</p>
+            <div className={`write-llm-panel${isExtractive ? " write-llm-warn" : ""}`}>
+              <div className="write-llm-chip-row">
+                <span className="write-llm-chip" title="Active LLM from /api/health">
+                  Provider: {providerLabel}
+                </span>
+              </div>
+              {isExtractive ? (
+                <div className="write-llm-setup">
+                  <p className="write-llm-setup-title">Full drafting needs a language model</p>
+                  <p className="status write-llm-hint">
+                    Extractive / offline mode only builds a short skeleton (about one page). It cannot
+                    produce 10-page IEEE drafts. Enable OpenAI or Ollama, then regenerate.
+                  </p>
+                  <ol className="write-llm-steps">
+                    <li>
+                      Copy <code>.env.example</code> to <code>.env</code> in the project root.
+                    </li>
+                    <li>
+                      Set <code>SELFRAG_OPENAI_API_KEY=…</code> <strong>or</strong> run Ollama and set{" "}
+                      <code>SELFRAG_OLLAMA_MODEL</code> (optional: leave <code>SELFRAG_LLM_PROVIDER=auto</code>).
+                    </li>
+                    <li>Restart the backend, then confirm this chip shows <code>openai</code> or <code>ollama</code>.</li>
+                  </ol>
+                </div>
+              ) : (
+                <p className="status write-llm-hint">
+                  Conference-style multi-pass drafting via {providerLabel} targets ~10+ IEEE two-column
+                  pages. Select 2–3 Library papers for grounded citations and originality.
+                </p>
+              )}
+            </div>
+            {busy && progressMsg && <p className="write-progress">{progressMsg}</p>}
             {error && <p className="error">{error}</p>}
             <div className="actions">
               <button type="button" className="primary" disabled={busy || !prompt.trim()} onClick={generate}>
                 {busy ? "Generating…" : draft ? "Regenerate" : "Generate paper"}
               </button>
             </div>
+            <p className="status" style={{ marginBottom: 0 }}>
+              AI drafts are strong starting manuscripts — not a guarantee of conference acceptance. Review claims, figures, and citations before submit.
+            </p>
           </div>
 
           {past.length > 0 && (

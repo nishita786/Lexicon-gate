@@ -52,11 +52,13 @@ def create_paper_draft(payload: PaperDraftRequest, request: Request) -> PaperDra
         authors=generated["authors"],
         sections=generated["sections"],
         references=generated["references"],
+        figures=generated.get("figures") or [],
         document_ids=generated["document_ids"],
         status=generated["status"],
         grounded=generated["grounded"],
         provider=generated["provider"],
         notes=generated["notes"],
+        generation_steps=generated.get("generation_steps") or [],
         paper_format=payload.format,
     )
 

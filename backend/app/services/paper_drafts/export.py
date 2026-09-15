@@ -75,6 +75,21 @@ def build_docx(draft: PaperDraft) -> bytes:
             for r in p.runs:
                 r.font.name = "Times New Roman"
                 r.font.size = Pt(10)
+        for fig in draft.figures or []:
+            if (fig.section_anchor or "methodology") != key:
+                continue
+            box = doc.add_paragraph()
+            box.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            br = box.add_run(f"[Figure {fig.figure_id}: original diagram — see PDF/HTML preview]")
+            br.italic = True
+            br.font.size = Pt(9)
+            br.font.name = "Times New Roman"
+            cap = doc.add_paragraph(fig.caption or "")
+            cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            for r in cap.runs:
+                r.font.name = "Times New Roman"
+                r.font.size = Pt(8)
+                r.italic = True
 
     if draft.references:
         _add_heading(doc, "References")
