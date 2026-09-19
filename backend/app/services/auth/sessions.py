@@ -56,6 +56,7 @@ def create_session(user: dict[str, Any], ttl_seconds: int) -> str:
             "user_id": user.get("user_id"),
             "email": user.get("email"),
             "name": user.get("name", ""),
+            "researcher_id": user.get("researcher_id", ""),
             "expires_at": expires,
         }
         _persist()

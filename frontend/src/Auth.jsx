@@ -1,24 +1,18 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
 
-const INTRO_KEY = "lexiconIntroSeen";
-const BEATS = ["Find papers", "Library", "Ask with citations"];
+const BEATS = [
+  { title: "Find papers", detail: "Search across your sources with intent, not keywords alone." },
+  { title: "Keep a library", detail: "Save what matters so evidence stays close to the work." },
+  { title: "Ask with citations", detail: "Get answers grounded in documents you can verify." },
+];
 
-function introAlreadySeen() {
-  try {
-    return sessionStorage.getItem(INTRO_KEY) === "1";
-  } catch {
-    return true;
-  }
-}
-
-function markIntroSeen() {
-  try {
-    sessionStorage.setItem(INTRO_KEY, "1");
-  } catch {
-    /* private mode */
-  }
-}
+/** Brand hold → beats → unlock continue (ms). Skippable anytime. */
+const INTRO_TIMING = {
+  brandHold: 1800,
+  beatGap: 1600,
+  readyHold: 900,
+};
 
 function prefersReducedMotion() {
   return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -48,27 +42,58 @@ export default function AuthScreen({ onSignedIn }) {
   const [confirm, setConfirm] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [showIntro, setShowIntro] = useState(() => !introAlreadySeen());
+  const [showIntro, setShowIntro] = useState(true);
   const [reduced] = useState(prefersReducedMotion);
+  const [beatIndex, setBeatIndex] = useState(reduced ? BEATS.length : -1);
+  const [introReady, setIntroReady] = useState(Boolean(reduced));
+  const [leaving, setLeaving] = useState(false);
 
   const isSignup = mode === "signup";
 
   function finishIntro() {
-    markIntroSeen();
-    setShowIntro(false);
+    if (leaving) return;
+    setLeaving(true);
+    window.setTimeout(() => setShowIntro(false), reduced ? 0 : 420);
   }
+
+  useEffect(() => {
+    if (!showIntro || reduced) return undefined;
+
+    const timers = [];
+    let elapsed = INTRO_TIMING.brandHold;
+
+    BEATS.forEach((_, index) => {
+      timers.push(
+        window.setTimeout(() => setBeatIndex(index), elapsed)
+      );
+      elapsed += INTRO_TIMING.beatGap;
+    });
+
+    timers.push(
+      window.setTimeout(() => {
+        setBeatIndex(BEATS.length);
+        setIntroReady(true);
+      }, elapsed + INTRO_TIMING.readyHold)
+    );
+
+    return () => timers.forEach((id) => window.clearTimeout(id));
+  }, [showIntro, reduced]);
 
   useEffect(() => {
     if (!showIntro) return undefined;
     function onKey(event) {
-      if (event.key === "Enter" || event.key === "Escape") {
+      if (event.key === "Enter" && introReady) {
+        event.preventDefault();
+        finishIntro();
+      }
+      if (event.key === "Escape") {
         event.preventDefault();
         finishIntro();
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showIntro]);
+  }, [showIntro, introReady, leaving]);
 
   async function submit(event) {
     event.preventDefault();
@@ -79,10 +104,11 @@ export default function AuthScreen({ onSignedIn }) {
     }
     setBusy(true);
     try {
-      const user = isSignup
-        ? await api.signup({ email, password, name })
-        : await api.login({ email, password });
-      onSignedIn(user);
+      await (isSignup
+        ? api.signup({ email, password, name })
+        : api.login({ email, password }));
+      const confirmed = await api.me();
+      onSignedIn(confirmed);
     } catch (err) {
       setError(err.message || "Could not sign in.");
     } finally {
@@ -90,27 +116,63 @@ export default function AuthScreen({ onSignedIn }) {
     }
   }
 
+  const activeBeat = beatIndex >= 0 && beatIndex < BEATS.length ? BEATS[beatIndex] : null;
+  const progress = Math.min(1, Math.max(0, (beatIndex + 1) / (BEATS.length + 1)));
+
   return (
     <div className="auth-screen">
       <div className="auth-orbs" aria-hidden="true">
-        <span className="orb orb-violet" />
-        <span className="orb orb-magenta" />
-        <span className="orb orb-orange" />
+        <span className="orb orb-forest" />
+        <span className="orb orb-gold" />
+        <span className="orb orb-plum" />
       </div>
       {showIntro && (
-        <div className={`intro-stage${reduced ? " is-reduced" : ""}`}>
-          <Logo size="hero" />
-          <p className="intro-tagline">Question, evidence, verified answer.</p>
-          <ol className="intro-beats">
-            {BEATS.map((beat) => (
-              <li key={beat} className="intro-beat">
-                {beat}
-              </li>
-            ))}
-          </ol>
-          <button type="button" className="primary intro-continue" onClick={finishIntro}>
-            Continue
-          </button>
+        <div
+          className={`intro-stage${reduced ? " is-reduced" : ""}${leaving ? " is-leaving" : ""}${introReady ? " is-ready" : ""}`}
+          role="dialog"
+          aria-label="Welcome to Lexicon Gate"
+          aria-live="polite"
+        >
+          <div className="intro-brand">
+            <Logo size="hero" />
+            <p className="intro-kicker">Evidence-first research</p>
+            <p className="intro-tagline">Question, evidence, verified answer.</p>
+          </div>
+
+          <div className="intro-story">
+            {activeBeat ? (
+              <div key={activeBeat.title} className="intro-beat-card">
+                <p className="intro-beat-title">{activeBeat.title}</p>
+                <p className="intro-beat-detail">{activeBeat.detail}</p>
+              </div>
+            ) : introReady ? (
+              <div className="intro-beat-card is-finale">
+                <p className="intro-beat-title">Ready when you are</p>
+                <p className="intro-beat-detail">Create an account or log in to open your library.</p>
+              </div>
+            ) : (
+              <div className="intro-beat-card is-placeholder" aria-hidden="true">
+                <p className="intro-beat-title">&nbsp;</p>
+                <p className="intro-beat-detail">&nbsp;</p>
+              </div>
+            )}
+          </div>
+
+          <div className="intro-progress" aria-hidden="true">
+            <span className="intro-progress-bar" style={{ transform: `scaleX(${progress})` }} />
+          </div>
+
+          <div className="intro-actions">
+            {introReady ? (
+              <button type="button" className="primary intro-continue" onClick={finishIntro}>
+                Enter Lexicon Gate
+              </button>
+            ) : (
+              <button type="button" className="ghost intro-skip" onClick={finishIntro}>
+                Skip intro
+              </button>
+            )}
+          </div>
         </div>
       )}
       <div

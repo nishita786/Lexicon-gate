@@ -7,13 +7,12 @@ It will refuse when the sources cannot support a reliable answer. It does not fi
 ## What you get
 
 1. **Ask** — default home: question your library with one verification badge, citations, and evidence; **New Chat** starts a blank session; **Recents** in the sidebar reopen past Ask chats and paper searches.
-2. **Find papers** — search with filters (**All**, **Academic Papers**, **Research Websites**, **Open Access**) across Semantic Scholar, OpenAlex, arXiv, and optional [Tavily](https://tavily.com) web search (`SELFRAG_TAVILY_API_KEY`). Add open-access PDFs (or honest abstract/page fallbacks) to your library.
+2. **Find papers** — quick search with filters (**All**, **Academic Papers**, **Research Websites**, **Open Access**) across Semantic Scholar, OpenAlex, arXiv, and optional [Tavily](https://tavily.com) web search (`SELFRAG_TAVILY_API_KEY`). Add open-access PDFs (or honest abstract/page fallbacks) to your library.
 3. **Library** — your sources (imported papers or uploaded files).
 4. **Compare** — side-by-side structure across papers in your library.
-5. **Write paper** — Gemini-style split: topic + **2–3 Library reference papers** on the left; live **IEEE two-column** preview on the right with elaborated sections, citations, and **original SVG figures** (not scraped from PDFs). With **OpenAI or Ollama**, multi-pass drafting targets **~10+ IEEE two-column pages**; extractive/offline mode stays a short skeleton. AI drafts need human review — not a guarantee of conference acceptance. Without sources, exploratory outlines use `[Source needed]`.
-6. **Events** — browse India and worldwide tech, IEEE, and research CFP events that are open to apply; apply on the official site.
+5. **Events** — browse India and worldwide tech, IEEE, and research CFP events that are open to apply; apply on the official site.
 
-There is no notebook, no pipeline picker, and no research comparison screen. Evaluation stays in pytest for quality checks.
+There is no notebook and no pipeline picker. Evaluation stays in pytest for quality checks.
 
 ## How to run
 
@@ -70,5 +69,7 @@ Optional hosted models (OpenAI, Ollama) plug in through the same provider interf
 - The bundled generator is extractive, not a large abstractive LM. Hosted providers can be swapped in without changing the loop.
 - Confidence is a function of retrieved evidence, not a guarantee of truth.
 - Page numbers for markdown are synthetic unless the file has page markers or is a PDF.
+- Project invite tokens are shown once for legacy email invites and must be shared privately when used. Researcher-ID invites are accepted in-app without pasting a token. Tokens are stored hashed; they are never placed in page URLs.
+- A Researcher ID identifies a user for collaboration lookup only — it is not a password or access grant.
 
 Engineering notes: [Architecture](docs/architecture.md), [Methodology](docs/methodology.md), [Evaluation](docs/evaluatihttp://localhost:5173on.md), [API](docs/api.md).

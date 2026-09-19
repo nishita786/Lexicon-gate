@@ -1,25 +1,19 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, ms, pct } from "./api";
 import AuthScreen, { Logo } from "./Auth";
+import {
+  EmptyState,
+  StatusBanner,
+} from "./ui";
 
 const NAV = [
   ["ask", "Ask"],
   ["find", "Find papers"],
   ["library", "Library"],
   ["compare", "Compare"],
-  ["write", "Write paper"],
   ["events", "Events"],
 ];
 
-const PAPER_SECTION_ORDER = [
-  ["abstract", "Abstract"],
-  ["keywords", "Keywords"],
-  ["introduction", "I. Introduction"],
-  ["related_work", "II. Related Work"],
-  ["methodology", "III. Methodology"],
-  ["results", "IV. Results / Discussion"],
-  ["conclusion", "V. Conclusion"],
-];
 
 const STATUS_COPY = {
   ANSWERED: { label: "Answered", tone: "good" },
@@ -43,6 +37,7 @@ export default function App() {
   const [sidebarRecents, setSidebarRecents] = useState([]);
   const [activeRecentId, setActiveRecentId] = useState(null);
   const [findRestore, setFindRestore] = useState(null);
+  const [comparePrefill, setComparePrefill] = useState(null);
   const navRef = useRef(null);
 
   useEffect(() => {
@@ -102,18 +97,18 @@ export default function App() {
   async function openSidebarRecent(item) {
     setActiveRecentId(`${item.kind}:${item.id}`);
     if (item.kind === "ask") {
-      setAskDraft(item.query || "");
+      setAskDraft("");
       setSelectedEvidence(null);
       setAskScope(null);
+      setLastResult(null);
       setChatEpoch((n) => n + 1);
+      setPage("ask");
       try {
         const saved = await api.historyItem(item.id);
         setLastResult(saved);
-        setAskDraft(saved.query || item.query || "");
       } catch {
-        setLastResult(null);
+        setAskDraft(item.query || "");
       }
-      setPage("ask");
       return;
     }
     try {
@@ -200,9 +195,9 @@ export default function App() {
     return (
       <div className="auth-screen session-splash">
         <div className="auth-orbs" aria-hidden="true">
-          <span className="orb orb-violet" />
-          <span className="orb orb-magenta" />
-          <span className="orb orb-orange" />
+          <span className="orb orb-forest" />
+          <span className="orb orb-gold" />
+          <span className="orb orb-plum" />
         </div>
         <Logo size="hero" />
         <p className="muted">Opening the gate…</p>
@@ -216,13 +211,19 @@ export default function App() {
 
   return (
     <div className="app">
+      <div className="app-atmosphere" aria-hidden="true">
+        <span className="orb orb-forest" />
+        <span className="orb orb-gold" />
+        <span className="orb orb-plum" />
+        <span className="app-grain" />
+      </div>
       <a className="skip-link" href="#main">
         Skip to content
       </a>
       <aside className="sidebar">
         <div className="brand">
           <Logo size="nav" />
-          <p>Question, evidence, verified answer.</p>
+          <p>Find sources. Ask with evidence. Trust the answer.</p>
         </div>
         <button type="button" className="new-chat-btn" onClick={startNewChat}>
           New Chat
@@ -302,7 +303,6 @@ export default function App() {
               setResult={setLastResult}
               selected={selectedEvidence}
               setSelected={setSelectedEvidence}
-              history={history}
               onQueried={refresh}
               askScope={askScope}
               onClearScope={() => setAskScope(null)}
@@ -325,8 +325,13 @@ export default function App() {
               }}
             />
           )}
-          {page === "compare" && <ComparePapers docs={docs} />}
-          {page === "write" && <WritePaper docs={docs} health={health} />}
+          {page === "compare" && (
+            <ComparePapers
+              docs={docs}
+              prefill={comparePrefill}
+              onPrefillConsumed={() => setComparePrefill(null)}
+            />
+          )}
           {page === "events" && <Events />}
         </main>
       </div>
@@ -364,6 +369,30 @@ const EVENT_TYPE_ICONS = {
   hackathon: "⌘",
   meetup: "◎",
 };
+
+async function copyText(value) {
+  const text = String(value || "");
+  if (!text) return false;
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
 
 function Events() {
   const [q, setQ] = useState("");
@@ -407,7 +436,7 @@ function Events() {
           <p>Current and upcoming conferences, IEEE, research CFPs, and hackathons — apply on the official site.</p>
         </div>
       </div>
-      <div className="spotlight spotlight-magenta">
+      <div className="spotlight spotlight-forest">
         <p className="spotlight-kicker">Live & upcoming</p>
         <p>Browse events happening now or coming up next. Filter by type and city, then open Apply now.</p>
       </div>
@@ -504,7 +533,7 @@ function Events() {
           </button>
         </div>
       </form>
-      {error && <p className="error">{error}</p>}
+      {error && <StatusBanner tone="error">{error}</StatusBanner>}
       <div className="event-grid">
         {items.map((item) => {
           const typeLabel = EVENT_TYPE_LABELS[item.event_type] || "Event";
@@ -611,11 +640,33 @@ function Events() {
   );
 }
 
-function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, history, onQueried, askScope, onClearScope }) {
+function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, onQueried, askScope, onClearScope }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [selectedDocIds, setSelectedDocIds] = useState([]);
+  const [askedQuery, setAskedQuery] = useState(() => result?.query || "");
+  const [sourcesOpen, setSourcesOpen] = useState(false);
+  const threadEndRef = useRef(null);
   const emptyLibrary = docs.length === 0;
+  const scopedDocs =
+    askScope?.document_ids?.length
+      ? docs.filter((d) => askScope.document_ids.includes(d.document_id))
+      : docs;
+  const pickDocs = scopedDocs.length ? scopedDocs : docs;
+
+  useEffect(() => {
+    if (askScope?.document_ids?.length) {
+      setSelectedDocIds(askScope.document_ids.filter((id) => docs.some((d) => d.document_id === id)));
+    }
+  }, [askScope, docs]);
+
+  useEffect(() => {
+    if (result?.query) setAskedQuery(result.query);
+  }, [result?.query_id, result?.query]);
+
+  useEffect(() => {
+    threadEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [result?.query_id, busy]);
 
   function toggleDoc(id) {
     setSelectedDocIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -627,6 +678,8 @@ function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, 
     setBusy(true);
     setError("");
     setSelected(null);
+    setAskedQuery(text);
+    setResult(null);
     try {
       const scopedIds = selectedDocIds.length
         ? selectedDocIds
@@ -639,6 +692,7 @@ function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, 
         document_ids: scopedIds,
       });
       setResult(payload);
+      setQuery("");
       await onQueried();
     } catch (err) {
       setError(err.message);
@@ -649,71 +703,135 @@ function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, 
 
   const badge = result ? verificationBadge(result) : null;
   const scopeLabel = selectedDocIds.length
-    ? `${selectedDocIds.length} selected source${selectedDocIds.length === 1 ? "" : "s"}`
+    ? `${selectedDocIds.length} source${selectedDocIds.length === 1 ? "" : "s"}`
     : askScope?.label || "";
+  const showThread = Boolean(result || busy || askedQuery);
 
   return (
-    <div className={`ask-workspace ${result ? "has-result" : ""}`}>
-      <div className="ask-col ask-col-query">
-        {emptyLibrary && (
-          <div className="spotlight spotlight-violet">
-            <p className="spotlight-kicker">Start here</p>
-            <p>
-              Upload sources first. Open Find papers to search academic indexes, or Library
-              to upload your own files.
+    <div className={`ask-chat${showThread ? " has-thread" : " is-empty"}`}>
+      <div className="ask-thread" role="log" aria-live="polite" aria-relevant="additions">
+        {!showThread && (
+          <div className="ask-empty">
+            <Logo size="hero" />
+            <h2 className="ask-empty-title">What do you want to know?</h2>
+            <p className="ask-empty-copy">
+              {emptyLibrary
+                ? "Add sources in Find papers or Library, then ask here."
+                : "Ask in plain language. Answers stay grounded in your library."}
             </p>
           </div>
         )}
-        <div className="card">
-          {scopeLabel && (
-            <div className="theme-chip-row">
-              <span className="theme-chip">
-                Asking in: {scopeLabel}
-                <button
-                  type="button"
-                  className="theme-chip-clear"
-                  onClick={() => {
-                    setSelectedDocIds([]);
-                    onClearScope?.();
-                  }}
-                  aria-label="Clear document filter"
-                >
-                  ×
-                </button>
+
+        {showThread && (
+          <>
+            {(askedQuery || result?.query) && (
+              <div className="chat-turn chat-turn-user">
+                <div className="chat-bubble chat-bubble-user">{askedQuery || result.query}</div>
+              </div>
+            )}
+
+            {busy && !result && (
+              <div className="chat-turn chat-turn-assistant">
+                <div className="chat-bubble chat-bubble-assistant is-thinking">
+                  <span className="ask-thinking-dot" />
+                  <span className="ask-thinking-dot" />
+                  <span className="ask-thinking-dot" />
+                  Checking sources…
+                </div>
+              </div>
+            )}
+
+            {result && (
+              <div className="chat-turn chat-turn-assistant">
+                <div className="chat-bubble chat-bubble-assistant">
+                  {badge && (
+                    <div className="chat-answer-meta">
+                      <span className={`flag ${badge.tone}`}>{badge.label}</span>
+                      {busy && <span className="status">Updating…</span>}
+                    </div>
+                  )}
+                  <AnswerView
+                    result={result}
+                    docs={docs}
+                    selected={selected}
+                    onSelect={setSelected}
+                  />
+                </div>
+              </div>
+            )}
+            <div ref={threadEndRef} />
+          </>
+        )}
+      </div>
+
+      <div className="ask-composer">
+        {scopeLabel && (
+          <div className="theme-chip-row ask-composer-scope">
+            <span className="theme-chip">
+              {scopeLabel}
+              <button
+                type="button"
+                className="theme-chip-clear"
+                onClick={() => {
+                  setSelectedDocIds([]);
+                  onClearScope?.();
+                }}
+                aria-label="Clear source filter"
+              >
+                ×
+              </button>
+            </span>
+          </div>
+        )}
+
+        {!emptyLibrary && (
+          <details
+            className="ask-sources"
+            open={sourcesOpen}
+            onToggle={(e) => setSourcesOpen(e.currentTarget.open)}
+          >
+            <summary>
+              Sources
+              <span className="ask-sources-hint">
+                {selectedDocIds.length
+                  ? `${selectedDocIds.length} selected`
+                  : askScope?.document_ids?.length
+                    ? "Theme scoped"
+                    : "Entire library"}
               </span>
+            </summary>
+            <div className="chips write-source-chips ask-source-chips">
+              {pickDocs.map((doc) => {
+                const id = doc.document_id;
+                const active = selectedDocIds.includes(id);
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    className={`chip${active ? " active" : ""}`}
+                    onClick={() => toggleDoc(id)}
+                  >
+                    {doc.title || doc.name}
+                  </button>
+                );
+              })}
             </div>
-          )}
-          {!emptyLibrary && (
-            <div className="ask-doc-pick" style={{ marginBottom: 10 }}>
-              <div className="write-sources-head" style={{ marginBottom: 6 }}>
-                <strong>Sources for this question</strong>
-                <span className="status" style={{ margin: 0 }}>
-                  {selectedDocIds.length ? "Selected docs only" : "All library (or theme)"}
-                </span>
-              </div>
-              <div className="chips write-source-chips">
-                {docs.map((doc) => {
-                  const id = doc.document_id;
-                  const active = selectedDocIds.includes(id);
-                  return (
-                    <button
-                      key={id}
-                      type="button"
-                      className={`chip${active ? " active" : ""}`}
-                      onClick={() => toggleDoc(id)}
-                    >
-                      {doc.title || doc.name}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
+          </details>
+        )}
+
+        <form
+          className="ask-composer-box"
+          onSubmit={(e) => {
+            e.preventDefault();
+            ask();
+          }}
+        >
           <textarea
             value={query}
+            rows={1}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder={emptyLibrary ? "Find or upload sources first, then ask." : "Ask a question about your sources…"}
-            disabled={emptyLibrary}
+            placeholder={emptyLibrary ? "Add sources first…" : "Message Lexicon Gate…"}
+            disabled={emptyLibrary || busy}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
@@ -721,48 +839,17 @@ function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, 
               }
             }}
           />
-          <div className="row" style={{ marginTop: 10 }}>
-            <button
-              className={`primary${busy ? " is-busy" : ""}`}
-              disabled={busy || emptyLibrary || !query.trim()}
-              onClick={() => ask()}
-            >
-              {busy ? "Checking sources…" : "Ask"}
-            </button>
-            {error && <span className="error">{error}</span>}
-          </div>
-          {badge && (
-            <div className="verify-block">
-              <span className={`flag ${badge.tone}`}>{badge.label}</span>
-              {result.status === "CONFLICTING_EVIDENCE" && (
-                <p className="status" style={{ margin: "8px 0 0" }}>Sources disagree. Both views are in the answer.</p>
-              )}
-            </div>
-          )}
-        </div>
-        <HistoryList
-          items={history}
-          onPick={async (item) => {
-            setQuery(item.query);
-            try {
-              const saved = await api.historyItem(item.query_id);
-              setResult(saved);
-              setSelected(null);
-            } catch {
-              /* still fill the question box */
-            }
-          }}
-        />
+          <button
+            type="submit"
+            className={`primary ask-send${busy ? " is-busy" : ""}`}
+            disabled={busy || emptyLibrary || !query.trim()}
+            aria-label={busy ? "Checking sources" : "Send"}
+          >
+            {busy ? "…" : "Send"}
+          </button>
+        </form>
+        {error && <p className="ask-composer-error error">{error}</p>}
       </div>
-
-      {result && (
-        <AnswerView
-          result={result}
-          docs={docs}
-          selected={selected}
-          onSelect={setSelected}
-        />
-      )}
     </div>
   );
 }
@@ -857,22 +944,22 @@ function FindPapers({ onImported, onRecentsChange, restore }) {
     setImporting(paper.paper_id);
     setError("");
     setMessage("");
+    const payload = {
+      paper_id: paper.paper_id,
+      source: paper.source,
+      title: paper.title,
+      authors: paper.authors,
+      year: paper.year,
+      venue: paper.venue,
+      abstract: paper.abstract,
+      summary: paper.summary,
+      doi: paper.doi,
+      pdf_url: paper.pdf_url,
+      url: paper.url,
+      result_kind: paper.result_kind,
+    };
     try {
-      const result = await api.importPaper({
-        paper_id: paper.paper_id,
-        source: paper.source,
-        title: paper.title,
-        authors: paper.authors,
-        year: paper.year,
-        venue: paper.venue,
-        abstract: paper.abstract,
-        summary: paper.summary,
-        doi: paper.doi,
-        pdf_url: paper.pdf_url,
-        url: paper.url,
-        result_kind: paper.result_kind,
-      });
-      await onImported();
+      const result = await api.importPaper(payload);
       if (result.ingested === "pdf") {
         setMessage(`Added “${paper.title}”. Full PDF indexed. Ask over it from Ask.`);
       } else if (result.ingested === "web") {
@@ -883,6 +970,7 @@ function FindPapers({ onImported, onRecentsChange, restore }) {
         );
       }
       if (result.warnings?.length) setError(result.warnings.join(" · "));
+      await onImported();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -913,7 +1001,8 @@ function FindPapers({ onImported, onRecentsChange, restore }) {
         <div>
           <h2>Find papers</h2>
           <p>
-            Search academic indexes and research websites. Prefer open-access PDFs when adding to Library, then Ask.
+            Search academic indexes and research websites. Prefer open-access PDFs when adding to
+            Library, then Ask.
           </p>
         </div>
       </div>
@@ -950,8 +1039,8 @@ function FindPapers({ onImported, onRecentsChange, restore }) {
           )}
         </div>
       </form>
-      {error && <p className="error">{error}</p>}
-      {message && <p className="status">{message}</p>}
+      {error && <StatusBanner tone="error">{error}</StatusBanner>}
+      {message && <StatusBanner tone="success">{message}</StatusBanner>}
       {(results?.papers || []).map((paper) => {
         const avail = availabilityLabel(paper);
         const blurb = paper.summary || paper.abstract || "";
@@ -1049,11 +1138,15 @@ function Library({ docs, onChange, onAskTheme }) {
   }
 
   async function remove(id) {
+    if (!window.confirm("Remove this source from the Library? Indexed passages will be deleted.")) {
+      return;
+    }
     setBusy(true);
     setError("");
     try {
       await api.deleteDocument(id);
       await onChange();
+      setMessage("Source removed from Library.");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -1077,15 +1170,12 @@ function Library({ docs, onChange, onAskTheme }) {
         <p className="spotlight-kicker">Your sources</p>
         <p>Everything Ask retrieves from lives here — imported papers and files you upload.</p>
       </div>
-      {error && <p className="error">{error}</p>}
-      {message && <p className="status">{message}</p>}
+      {error && <StatusBanner tone="error">{error}</StatusBanner>}
+      {message && <StatusBanner tone="success">{message}</StatusBanner>}
       {!docs.length && (
-        <div className="card">
-          <h3>No sources yet</h3>
-          <p className="status">
-            Upload a PDF or text file, or search academic papers in <strong>Find papers</strong>.
-          </p>
-        </div>
+        <EmptyState title="No sources yet">
+          Upload a PDF or text file, or search academic papers in <strong>Find papers</strong>.
+        </EmptyState>
       )}
       {docs.length > 0 && clusters.length > 0 && (
         <div className="card" style={{ marginBottom: 16 }}>
@@ -1171,7 +1261,7 @@ function Library({ docs, onChange, onAskTheme }) {
 
 const STRUCTURE_COLUMNS = ["objective", "method", "dataset", "metric", "result", "limitation"];
 
-function ComparePapers({ docs }) {
+function ComparePapers({ docs, prefill, onPrefillConsumed }) {
   const [rows, setRows] = useState([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1180,6 +1270,17 @@ function ComparePapers({ docs }) {
   const [question, setQuestion] = useState("");
   const [result, setResult] = useState(null);
   const [selectedEvidence, setSelectedEvidence] = useState(null);
+  const [scopeLabel, setScopeLabel] = useState("");
+
+  useEffect(() => {
+    if (!prefill) return;
+    if (Array.isArray(prefill.documentIds) && prefill.documentIds.length) {
+      setSelectedIds(prefill.documentIds);
+    }
+    if (prefill.label) setScopeLabel(prefill.label);
+    if (prefill.question) setQuestion(prefill.question);
+    onPrefillConsumed?.();
+  }, [prefill, onPrefillConsumed]);
 
   const load = useCallback(async () => {
     try {
@@ -1248,16 +1349,30 @@ function ComparePapers({ docs }) {
           {extractBusy ? "Extracting…" : "Re-extract library"}
         </button>
       </div>
-      <div className="spotlight spotlight-magenta">
+      {scopeLabel ? (
+        <div className="theme-chip-row" style={{ marginBottom: 8 }}>
+          <span className="theme-chip">
+            Comparing: {scopeLabel}
+            <button
+              type="button"
+              className="theme-chip-clear"
+              onClick={() => setScopeLabel("")}
+              aria-label="Clear project compare scope label"
+            >
+              ×
+            </button>
+          </span>
+        </div>
+      ) : null}
+      <div className="spotlight spotlight-forest">
         <p className="spotlight-kicker">Side by side</p>
         <p>Objective, method, dataset, metric, result, limitation — extracted once per paper, kept even when confidence is low.</p>
       </div>
-      {error && <p className="error">{error}</p>}
+      {error && <StatusBanner tone="error">{error}</StatusBanner>}
       {!docs.length && (
-        <div className="card">
-          <h3>No sources yet</h3>
-          <p className="status">Add papers in Library or Find papers, then compare structure or ask across two or more sources.</p>
-        </div>
+        <EmptyState title="No sources yet">
+          Add papers in Library or Find papers, then compare structure or ask across two or more sources.
+        </EmptyState>
       )}
       {docs.length > 0 && (
         <>
@@ -1538,485 +1653,6 @@ function CompareResultView({ result, selectedDocIds, docs, selected, onSelect })
   );
 }
 
-function WritePaper({ docs, health }) {
-  const [prompt, setPrompt] = useState("");
-  const [titleHint, setTitleHint] = useState("");
-  const [selectedIds, setSelectedIds] = useState([]);
-  const [draft, setDraft] = useState(null);
-  const [past, setPast] = useState([]);
-  const [busy, setBusy] = useState(false);
-  const [progressMsg, setProgressMsg] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [exporting, setExporting] = useState("");
-  const [error, setError] = useState("");
-  const [savedAt, setSavedAt] = useState(null);
-  const [previewHtml, setPreviewHtml] = useState("");
-  const [previewSrc, setPreviewSrc] = useState("");
-  const [previewBusy, setPreviewBusy] = useState(false);
-  const [editorsOpen, setEditorsOpen] = useState(false);
-  const saveTimer = useRef(null);
-  const progressTimer = useRef(null);
-
-  const GEN_STEPS = [
-    "Retrieving Library evidence…",
-    "Outlining manuscript and figures…",
-    "Writing Introduction…",
-    "Writing Related Work…",
-    "Writing Methodology…",
-    "Writing Results…",
-    "Writing Abstract and Conclusion…",
-    "Drawing original figures…",
-  ];
-
-  const llmName = health?.llm?.name || health?.llm_provider?.name || "";
-  const llmModel = health?.llm?.model || health?.llm_provider?.model || "";
-  const isExtractive = llmName === "extractive" || health?.llm?.deterministic;
-  const providerLabel = llmName
-    ? `${llmName}${llmModel ? ` · ${llmModel}` : ""}`
-    : "unknown";
-
-  const loadPast = useCallback(async () => {
-    try {
-      const payload = await api.listPaperDrafts();
-      setPast(payload.drafts || []);
-    } catch {
-      /* ignore list errors on mount */
-    }
-  }, []);
-
-  const refreshPreview = useCallback(async (draftId) => {
-    if (!draftId) {
-      setPreviewHtml("");
-      return;
-    }
-    setPreviewBusy(true);
-    try {
-      const html = await api.previewPaperDraft(draftId);
-      setPreviewHtml(html);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setPreviewBusy(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadPast();
-  }, [loadPast]);
-
-  useEffect(() => {
-    if (!draft?.draft_id) {
-      setPreviewHtml("");
-      return;
-    }
-    refreshPreview(draft.draft_id);
-  }, [draft?.draft_id, draft?.updated_at, refreshPreview]);
-
-  useEffect(() => {
-    if (!previewHtml) {
-      setPreviewSrc("");
-      return undefined;
-    }
-    const blob = new Blob([previewHtml], { type: "text/html" });
-    const url = URL.createObjectURL(blob);
-    setPreviewSrc(url);
-    return () => {
-      URL.revokeObjectURL(url);
-    };
-  }, [previewHtml]);
-
-  useEffect(() => {
-    return () => {
-      if (saveTimer.current) clearTimeout(saveTimer.current);
-      if (progressTimer.current) clearInterval(progressTimer.current);
-    };
-  }, []);
-
-  function toggleSource(id) {
-    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
-  }
-
-  function startProgressCycle() {
-    let i = 0;
-    setProgressMsg(GEN_STEPS[0]);
-    if (progressTimer.current) clearInterval(progressTimer.current);
-    progressTimer.current = setInterval(() => {
-      i = Math.min(i + 1, GEN_STEPS.length - 1);
-      setProgressMsg(GEN_STEPS[i]);
-    }, 2200);
-  }
-
-  function stopProgressCycle() {
-    if (progressTimer.current) clearInterval(progressTimer.current);
-    progressTimer.current = null;
-  }
-
-  async function generate() {
-    const text = prompt.trim();
-    if (!text) {
-      setError("Enter a topic or prompt for the paper.");
-      return;
-    }
-    if (selectedIds.length < 2) {
-      setError("");
-    }
-    setBusy(true);
-    setError("");
-    startProgressCycle();
-    try {
-      const created = await api.createPaperDraft({
-        prompt: text,
-        format: "ieee_conference",
-        document_ids: selectedIds,
-        title_hint: titleHint.trim() || undefined,
-      });
-      setDraft(created);
-      setSavedAt(created.updated_at);
-      setEditorsOpen(false);
-      const last = (created.generation_steps || []).slice(-1)[0];
-      setProgressMsg(last || "Draft ready.");
-      await loadPast();
-    } catch (err) {
-      setError(err.message);
-      setProgressMsg("");
-    } finally {
-      stopProgressCycle();
-      setBusy(false);
-    }
-  }
-
-  function scheduleSave(next) {
-    setDraft(next);
-    if (!next?.draft_id) return;
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => {
-      setSaving(true);
-      setError("");
-      try {
-        const updated = await api.updatePaperDraft(next.draft_id, {
-          title: next.title,
-          authors: next.authors,
-          sections: next.sections,
-          references: next.references,
-        });
-        setDraft(updated);
-        setSavedAt(updated.updated_at);
-        await loadPast();
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setSaving(false);
-      }
-    }, 700);
-  }
-
-  function patchField(field, value) {
-    if (!draft) return;
-    scheduleSave({ ...draft, [field]: value });
-  }
-
-  function patchSection(key, value) {
-    if (!draft) return;
-    scheduleSave({
-      ...draft,
-      sections: { ...(draft.sections || {}), [key]: value },
-    });
-  }
-
-  function patchReferences(text) {
-    if (!draft) return;
-    const references = text
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-    scheduleSave({ ...draft, references });
-  }
-
-  async function saveNow() {
-    if (!draft?.draft_id) return;
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    setSaving(true);
-    setError("");
-    try {
-      const updated = await api.updatePaperDraft(draft.draft_id, {
-        title: draft.title,
-        authors: draft.authors,
-        sections: draft.sections,
-        references: draft.references,
-      });
-      setDraft(updated);
-      setSavedAt(updated.updated_at);
-      await loadPast();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function download(format) {
-    if (!draft?.draft_id) return;
-    setExporting(format);
-    setError("");
-    try {
-      const { blob, filename } = await api.exportPaperDraft(draft.draft_id, format);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setExporting("");
-    }
-  }
-
-  async function openPast(id) {
-    setError("");
-    try {
-      const item = await api.getPaperDraft(id);
-      setDraft(item);
-      setPrompt(item.prompt || "");
-      setSelectedIds(item.document_ids || []);
-      setSavedAt(item.updated_at);
-      setEditorsOpen(false);
-    } catch (err) {
-      setError(err.message);
-    }
-  }
-
-  return (
-    <>
-      <div className="page-title">
-        <div>
-          <h2>Write paper</h2>
-          <p>
-            Topic on the left; live IEEE two-column manuscript on the right. Select 2–3 Library papers for grounded citations, then generate an elaborated draft with original figures.
-          </p>
-        </div>
-      </div>
-
-      <div className="write-split">
-        <div className="write-split-left">
-          <div className="card write-paper-setup">
-            <label>
-              Paper topic / prompt
-              <textarea
-                value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
-                placeholder="e.g. Self-RAG: retrieval-augmented generation with self-reflection"
-                rows={4}
-              />
-            </label>
-            <div className="write-paper-meta">
-              <label>
-                Title hint (optional)
-                <input
-                  value={titleHint}
-                  onChange={(e) => setTitleHint(e.target.value)}
-                  placeholder="Suggested manuscript title"
-                />
-              </label>
-              <div className="write-format-chip">
-                <span className="chip active">IEEE conference</span>
-              </div>
-            </div>
-            <div className="write-sources">
-              <div className="write-sources-head">
-                <strong>Reference papers (Library)</strong>
-                <span className="status" style={{ margin: 0 }}>
-                  Select 2–3 for best quality
-                </span>
-              </div>
-              {!docs.length ? (
-                <p className="status">
-                  Add papers via Find papers or Library first, then select them here for grounded citations.
-                </p>
-              ) : (
-                <div className="chips write-source-chips">
-                  {docs.map((doc) => {
-                    const id = doc.document_id;
-                    const active = selectedIds.includes(id);
-                    return (
-                      <button
-                        key={id}
-                        type="button"
-                        className={`chip${active ? " active" : ""}`}
-                        onClick={() => toggleSource(id)}
-                      >
-                        {doc.title || doc.name}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-              {selectedIds.length > 0 && selectedIds.length < 2 && (
-                <p className="status">Tip: selecting at least two papers improves related work and citations.</p>
-              )}
-            </div>
-            <div className={`write-llm-panel${isExtractive ? " write-llm-warn" : ""}`}>
-              <div className="write-llm-chip-row">
-                <span className="write-llm-chip" title="Active LLM from /api/health">
-                  Provider: {providerLabel}
-                </span>
-              </div>
-              {isExtractive ? (
-                <div className="write-llm-setup">
-                  <p className="write-llm-setup-title">Full drafting needs a language model</p>
-                  <p className="status write-llm-hint">
-                    Extractive / offline mode only builds a short skeleton (about one page). It cannot
-                    produce 10-page IEEE drafts. Enable OpenAI or Ollama, then regenerate.
-                  </p>
-                  <ol className="write-llm-steps">
-                    <li>
-                      Copy <code>.env.example</code> to <code>.env</code> in the project root.
-                    </li>
-                    <li>
-                      Set <code>SELFRAG_OPENAI_API_KEY=…</code> <strong>or</strong> run Ollama and set{" "}
-                      <code>SELFRAG_OLLAMA_MODEL</code> (optional: leave <code>SELFRAG_LLM_PROVIDER=auto</code>).
-                    </li>
-                    <li>Restart the backend, then confirm this chip shows <code>openai</code> or <code>ollama</code>.</li>
-                  </ol>
-                </div>
-              ) : (
-                <p className="status write-llm-hint">
-                  Conference-style multi-pass drafting via {providerLabel} targets ~10+ IEEE two-column
-                  pages. Select 2–3 Library papers for grounded citations and originality.
-                </p>
-              )}
-            </div>
-            {busy && progressMsg && <p className="write-progress">{progressMsg}</p>}
-            {error && <p className="error">{error}</p>}
-            <div className="actions">
-              <button type="button" className="primary" disabled={busy || !prompt.trim()} onClick={generate}>
-                {busy ? "Generating…" : draft ? "Regenerate" : "Generate paper"}
-              </button>
-            </div>
-            <p className="status" style={{ marginBottom: 0 }}>
-              AI drafts are strong starting manuscripts — not a guarantee of conference acceptance. Review claims, figures, and citations before submit.
-            </p>
-          </div>
-
-          {past.length > 0 && (
-            <div className="card write-past-card">
-              <h3>Recent drafts</h3>
-              <ul className="write-past-list">
-                {past.slice(0, 6).map((item) => (
-                  <li key={item.draft_id}>
-                    <button type="button" className="ghost write-past-item" onClick={() => openPast(item.draft_id)}>
-                      <strong>{item.title || "Untitled"}</strong>
-                      <span className="status">{item.grounded ? "Grounded" : "Outline"}</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {draft && (
-            <div className="card write-paper-editor">
-              <div className="write-editor-bar">
-                <div>
-                  <h3 style={{ margin: 0 }}>Draft controls</h3>
-                  <p className="status" style={{ margin: "4px 0 0" }}>
-                    {draft.grounded ? "Grounded" : "Exploratory outline"}
-                    {saving ? " · Saving…" : savedAt ? " · Saved" : ""}
-                  </p>
-                </div>
-                <div className="actions">
-                  <button type="button" className="ghost" disabled={saving} onClick={saveNow}>
-                    Save
-                  </button>
-                  <button type="button" disabled={!!exporting} onClick={() => download("docx")}>
-                    {exporting === "docx" ? "DOCX…" : "DOCX"}
-                  </button>
-                  <button type="button" disabled={!!exporting} onClick={() => download("pdf")}>
-                    {exporting === "pdf" ? "PDF…" : "PDF"}
-                  </button>
-                </div>
-              </div>
-              {(draft.notes || []).length > 0 && (
-                <ul className="write-notes">
-                  {draft.notes.map((note) => (
-                    <li key={note}>{note}</li>
-                  ))}
-                </ul>
-              )}
-              <label>
-                Title
-                <input value={draft.title || ""} onChange={(e) => patchField("title", e.target.value)} />
-              </label>
-              <label>
-                Authors
-                <input value={draft.authors || ""} onChange={(e) => patchField("authors", e.target.value)} />
-              </label>
-              <button
-                type="button"
-                className="ghost write-editors-toggle"
-                onClick={() => setEditorsOpen((o) => !o)}
-              >
-                {editorsOpen ? "Hide section editors" : "Edit sections"}
-              </button>
-              {editorsOpen && (
-                <div className="write-section-editors">
-                  {PAPER_SECTION_ORDER.map(([key, label]) => (
-                    <label key={key}>
-                      {label}
-                      <textarea
-                        className="write-section"
-                        rows={key === "keywords" ? 2 : 5}
-                        value={(draft.sections && draft.sections[key]) || ""}
-                        onChange={(e) => patchSection(key, e.target.value)}
-                      />
-                    </label>
-                  ))}
-                  <label>
-                    References (one per line)
-                    <textarea
-                      className="write-section"
-                      rows={4}
-                      value={(draft.references || []).join("\n")}
-                      onChange={(e) => patchReferences(e.target.value)}
-                    />
-                  </label>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        <div className="write-split-right">
-          <div className="write-preview-frame card">
-            <div className="write-preview-bar">
-              <span className="write-preview-label">IEEE conference preview</span>
-              {previewBusy && <span className="status">Updating…</span>}
-            </div>
-            {!draft ? (
-              <div className="write-preview-empty">
-                <p>Generate a paper to see the live IEEE two-column layout here.</p>
-              </div>
-            ) : previewSrc ? (
-              <iframe
-                className="write-preview-iframe"
-                title="IEEE paper preview"
-                src={previewSrc}
-              />
-            ) : (
-              <div className="write-preview-empty">
-                <p>{previewBusy ? "Building preview…" : "Preview unavailable."}</p>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    </>
-  );
-}
-
 function verificationBadge(result) {
   if (
     result.unrelated_to_sources ||
@@ -2166,121 +1802,84 @@ function AnswerView({ result, docs, selected, onSelect }) {
   }
 
   return (
-    <>
-      <div className="ask-col ask-col-answer">
-        <div className="card answer-card">
-          <h3>Answer</h3>
-          {result.unrelated_to_sources && (
-            <p className="status" style={{ marginTop: 0 }}>
-              This question is not covered by your files.
-            </p>
-          )}
-          {!result.unrelated_to_sources &&
-            (result.status === "INSUFFICIENT_EVIDENCE" || looksLikeDumpedJson(result.answer)) && (
-            <p className="status" style={{ marginTop: 0 }}>
-              The indexed files do not contain enough support for a reliable answer.
-            </p>
-          )}
-          <div className="answer">
-            {!looksLikeDumpedJson(result.answer) && (result.answer || "").trim() && (
-              <AnswerText
-                text={result.answer}
-                onCite={selectCite}
-              />
-            )}
-          </div>
-          {(result.status === "INSUFFICIENT_EVIDENCE" || result.unrelated_to_sources) &&
-            result.mismatch_detail && (
-            <p className="status" style={{ marginTop: 8 }}>
-              {result.mismatch_detail}
-            </p>
-          )}
-          <div className="export-bar">
-            <button type="button" className="ghost" onClick={copyAnswer}>
-              {copied === "copy" ? "Copied" : "Copy"}
-            </button>
-            <button type="button" className="ghost" onClick={saveAnswer}>
-              Save
-            </button>
-            {copied === "failed" && <span className="error">Copy failed</span>}
-          </div>
-        </div>
-        {contradictions.length > 0 && (
-          <div className="card conflict-panel">
-            <h3>Conflicting Evidence</h3>
-            <p className="status" style={{ marginTop: 0 }}>
-              Sources disagree. Both sides stay visible.
-            </p>
-            <ul className="claim-list">
-              {contradictions.map((pair, index) => (
-                <li key={`${pair.citation_a}-${pair.citation_b}-${index}`}>
-                  <div className="conflict-pair">
-                    <ClaimCard
-                      text={pair.claim_a}
-                      label="contradicted"
-                      tone="warn"
-                      source={evidenceByCite.get(pair.citation_a)}
-                      onSelectSource={(item) => item && onSelect(item)}
-                      onCite={selectCite}
-                    />
-                    <ClaimCard
-                      text={pair.claim_b}
-                      label="contradicted"
-                      tone="warn"
-                      source={evidenceByCite.get(pair.citation_b)}
-                      onSelectSource={(item) => item && onSelect(item)}
-                      onCite={selectCite}
-                    />
-                    {pair.explanation && <p className="status conflict-note">{pair.explanation}</p>}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </div>
+    <div className="chat-answer">
+      {result.status === "CONFLICTING_EVIDENCE" && (
+        <p className="status chat-status-note">Sources disagree. Both views stay visible below.</p>
+      )}
+      {result.unrelated_to_sources && (
+        <p className="status chat-status-note">This question is not covered by your files.</p>
+      )}
+      {!result.unrelated_to_sources &&
+        (result.status === "INSUFFICIENT_EVIDENCE" || looksLikeDumpedJson(result.answer)) && (
+        <p className="status chat-status-note">
+          The indexed files do not contain enough support for a reliable answer.
+        </p>
+      )}
+      <div className="answer">
+        {!looksLikeDumpedJson(result.answer) && (result.answer || "").trim() && (
+          <AnswerText text={result.answer} onCite={selectCite} />
         )}
-        <details className="card details-card">
-          <summary>Details</summary>
-          <div className="meta">
-            <span>Confidence <strong>{pct(conf.confidence)}</strong></span>
-            <span>Evidence <strong>{pct(lastGate?.evidence_score ?? conf.evidence_coverage)}</strong></span>
-            <span>Claims <strong>{conf.claims_verified}/{conf.claims_total}</strong></span>
-            <span>Checked in <strong>{ms(result.metrics?.latency_ms)}</strong></span>
-          </div>
-          {conf.caveat && <p className="status">{conf.caveat}</p>}
-          {result.hallucination?.flags?.length > 0 && (
-            <p className="error">{result.hallucination.flags.join(" · ")}</p>
-          )}
-          <h3 style={{ marginTop: 16 }}>Not used</h3>
-          {unused.length === 0 ? (
-            <p className="status">Every indexed file contributed, or the library is empty.</p>
-          ) : (
-            <ul className="plain-list">
-              {unused.map((doc) => (
-                <li key={doc.document_id}>{doc.title || doc.name}</li>
-              ))}
-            </ul>
-          )}
-          <h3 style={{ marginTop: 16 }}>Check trace</h3>
-          <ul className="trace compact">
-            {(result.trace || []).map((event) => (
-              <li key={`${event.step}-${event.stage}`}>
-                <span className={`dot ${event.status === "warn" ? "warn" : event.status === "skip" ? "skip" : ""}`} />
-                <div>
-                  {event.label}
-                  {event.detail && <div className="detail">{event.detail}</div>}
+      </div>
+      {(result.status === "INSUFFICIENT_EVIDENCE" || result.unrelated_to_sources) &&
+        result.mismatch_detail && (
+        <p className="status chat-status-note">{result.mismatch_detail}</p>
+      )}
+      <div className="export-bar">
+        <button type="button" className="ghost" onClick={copyAnswer}>
+          {copied === "copy" ? "Copied" : "Copy"}
+        </button>
+        <button type="button" className="ghost" onClick={saveAnswer}>
+          Save
+        </button>
+        {copied === "failed" && <span className="error">Copy failed</span>}
+      </div>
+
+      {contradictions.length > 0 && (
+        <details className="chat-panel" open>
+          <summary>Conflicting evidence</summary>
+          <p className="status" style={{ marginTop: 0 }}>
+            Sources disagree. Both sides stay visible.
+          </p>
+          <ul className="claim-list">
+            {contradictions.map((pair, index) => (
+              <li key={`${pair.citation_a}-${pair.citation_b}-${index}`}>
+                <div className="conflict-pair">
+                  <ClaimCard
+                    text={pair.claim_a}
+                    label="contradicted"
+                    tone="warn"
+                    source={evidenceByCite.get(pair.citation_a)}
+                    onSelectSource={(item) => item && onSelect(item)}
+                    onCite={selectCite}
+                  />
+                  <ClaimCard
+                    text={pair.claim_b}
+                    label="contradicted"
+                    tone="warn"
+                    source={evidenceByCite.get(pair.citation_b)}
+                    onSelectSource={(item) => item && onSelect(item)}
+                    onCite={selectCite}
+                  />
+                  {pair.explanation && <p className="status conflict-note">{pair.explanation}</p>}
                 </div>
               </li>
             ))}
           </ul>
         </details>
-      </div>
+      )}
 
-      <div className="ask-col ask-col-evidence">
-        <div className="card">
-          <h3>Evidence</h3>
-          {(result.evidence || []).length === 0 && (
-            <p className="status">No passages were cited.</p>
-          )}
+      <details className="chat-panel">
+        <summary>
+          Evidence
+          <span className="ask-sources-hint">
+            {(result.evidence || []).length
+              ? `${result.evidence.length} passage${result.evidence.length === 1 ? "" : "s"}`
+              : "None cited"}
+          </span>
+        </summary>
+        {(result.evidence || []).length === 0 ? (
+          <p className="status">No passages were cited.</p>
+        ) : (
           <div className="evidence-list">
             {(result.evidence || []).map((item) => (
               <EvidenceCard
@@ -2292,9 +1891,45 @@ function AnswerView({ result, docs, selected, onSelect }) {
               />
             ))}
           </div>
+        )}
+      </details>
+
+      <details className="chat-panel">
+        <summary>Details</summary>
+        <div className="meta">
+          <span>Confidence <strong>{pct(conf.confidence)}</strong></span>
+          <span>Evidence <strong>{pct(lastGate?.evidence_score ?? conf.evidence_coverage)}</strong></span>
+          <span>Claims <strong>{conf.claims_verified}/{conf.claims_total}</strong></span>
+          <span>Checked in <strong>{ms(result.metrics?.latency_ms)}</strong></span>
         </div>
-      </div>
-    </>
+        {conf.caveat && <p className="status">{conf.caveat}</p>}
+        {result.hallucination?.flags?.length > 0 && (
+          <p className="error">{result.hallucination.flags.join(" · ")}</p>
+        )}
+        <h3 style={{ marginTop: 16 }}>Not used</h3>
+        {unused.length === 0 ? (
+          <p className="status">Every indexed file contributed, or the library is empty.</p>
+        ) : (
+          <ul className="plain-list">
+            {unused.map((doc) => (
+              <li key={doc.document_id}>{doc.title || doc.name}</li>
+            ))}
+          </ul>
+        )}
+        <h3 style={{ marginTop: 16 }}>Check trace</h3>
+        <ul className="trace compact">
+          {(result.trace || []).map((event) => (
+            <li key={`${event.step}-${event.stage}`}>
+              <span className={`dot ${event.status === "warn" ? "warn" : event.status === "skip" ? "skip" : ""}`} />
+              <div>
+                {event.label}
+                {event.detail && <div className="detail">{event.detail}</div>}
+              </div>
+            </li>
+          ))}
+        </ul>
+      </details>
+    </div>
   );
 }
 
@@ -2396,35 +2031,4 @@ function EvidenceCard({ item, active, expanded, onSelect }) {
   );
 }
 
-async function copyText(text) {
-  if (!text) return false;
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function HistoryList({ items, onPick }) {
-  if (!items?.length) return null;
-  return (
-    <details className="card history-card">
-      <summary>Recent questions</summary>
-      <ul className="plain-list history">
-        {items.map((item) => (
-          <li key={item.query_id}>
-            <button type="button" className="history-item" onClick={() => onPick(item)}>
-              <span>{item.query}</span>
-              <span className="status">
-                {(STATUS_COPY[item.status] || {}).label || item.status}
-                {item.confidence != null ? ` · ${pct(item.confidence)}` : ""}
-              </span>
-            </button>
-          </li>
-        ))}
-      </ul>
-    </details>
-  );
-}
 

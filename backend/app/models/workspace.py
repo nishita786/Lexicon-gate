@@ -1,4 +1,4 @@
-"""Workspace research-recents models."""
+"""Workspace recents models."""
 
 from __future__ import annotations
 

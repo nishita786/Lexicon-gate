@@ -29,7 +29,7 @@ class ExtractiveProvider(LLMProvider):
             LLMTask.rewrite_query: self._rewrite_query,
             LLMTask.reflect: self._reflect,
             LLMTask.retrieval_decision: self._retrieval_decision,
-            LLMTask.paper_draft: self._paper_draft,
+            LLMTask.manuscript_assist: self._manuscript_assist,
         }.get(request.task)
 
         if handler is None:  # pragma: no cover - defensive
@@ -38,6 +38,8 @@ class ExtractiveProvider(LLMProvider):
         structured = handler(payload)
         if request.task in (LLMTask.answer, LLMTask.revise):
             text = str(structured.get("answer") or "")
+        elif request.task is LLMTask.manuscript_assist:
+            text = str(structured.get("result_text") or "")
         else:
             text = structured.get("answer") or json.dumps(structured, ensure_ascii=False)
         prompt_chars = sum(
@@ -112,30 +114,38 @@ class ExtractiveProvider(LLMProvider):
             "reason": payload.get("reason", "document-grounded question"),
         }
 
-    def _paper_draft(self, payload: dict[str, Any]) -> dict[str, Any]:
-        from ...models.query import EvidenceItem
-        from ..paper_drafts.generate import _extractive_skeleton
+    def _manuscript_assist(self, payload: dict[str, Any]) -> dict[str, Any]:
+        action = str(payload.get("action") or "")
+        text = str(payload.get("text") or "")
+        evidence = payload.get("evidence") or []
+        if action in ("suggest_evidence", "summarize_evidence") and not evidence:
+            return {
+                "result_text": "",
+                "suggestions": [],
+                "warnings": ["No project evidence available."],
+                "missing_evidence": True,
+            }
+        if action == "suggest_outline":
+            titles = payload.get("section_titles") or []
+            lines = [f"{i}. {t}" for i, t in enumerate(titles, start=1)] or ["1. Abstract", "2. Introduction"]
+            return {
+                "result_text": "\n".join(lines),
+                "suggestions": lines,
+                "warnings": ["Offline outline from existing section titles."],
+                "missing_evidence": False,
+            }
+        if action == "summarize_evidence":
+            quotes = [str(e.get("quote") or "").strip() for e in evidence if e.get("quote")]
+            return {
+                "result_text": "\n".join(f"- {q[:300]}" for q in quotes[:8]),
+                "suggestions": quotes[:8],
+                "warnings": ["Offline evidence summary uses stored quotes only."],
+                "missing_evidence": not bool(quotes),
+            }
+        return {
+            "result_text": text,
+            "suggestions": [],
+            "warnings": ["Limited offline manuscript assist."],
+            "missing_evidence": False,
+        }
 
-        evidence: list[EvidenceItem] = []
-        for idx, item in enumerate(payload.get("evidence") or [], start=1):
-            if not isinstance(item, dict):
-                continue
-            evidence.append(
-                EvidenceItem(
-                    citation_id=int(item.get("citation_id") or idx),
-                    chunk_id=str(item.get("chunk_id") or f"e{idx}"),
-                    document_id=str(item.get("document_id") or f"doc{idx}"),
-                    document_name=str(item.get("document_name") or "source"),
-                    text=str(item.get("text") or ""),
-                    title=str(item.get("title") or ""),
-                    authors=list(item.get("authors") or []),
-                    year=item.get("year"),
-                    apa=str(item.get("apa") or ""),
-                )
-            )
-        return _extractive_skeleton(
-            prompt=str(payload.get("query") or ""),
-            evidence=evidence,
-            title_hint=str(payload.get("title_hint") or "") or None,
-            author_name=str(payload.get("author_name") or ""),
-        )

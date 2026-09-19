@@ -1,17 +1,34 @@
-"""Signup, login, logout, and current user."""
+"""Signup, login, logout, current user, and Researcher ID lookup."""
 
 from __future__ import annotations
+
+import time
+from collections import defaultdict, deque
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from ..config import get_settings
-from ..models.auth import LoginRequest, SignupRequest, UserPublic
+from ..models.auth import LoginRequest, ResearcherPublic, SignupRequest, UserPublic
 from ..services.auth.sessions import create_session, get_session, revoke_session
-from ..services.auth.users import authenticate, create_user, public_user, valid_email
+from ..services.auth.users import (
+    authenticate,
+    create_user,
+    ensure_researcher_id,
+    find_by_researcher_id,
+    find_by_user_id,
+    normalise_researcher_id,
+    public_user,
+    researcher_public,
+    valid_email,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 COOKIE_NAME = "selfrag_session"
+
+_LOOKUP_WINDOW_SEC = 60
+_LOOKUP_MAX = 30
+_lookup_attempts: dict[str, deque[float]] = defaultdict(deque)
 
 
 def _set_session_cookie(response: Response, token: str, ttl: int) -> None:
@@ -31,6 +48,25 @@ def _clear_session_cookie(response: Response) -> None:
 
 def current_user_from_request(request: Request) -> dict | None:
     return get_session(request.cookies.get(COOKIE_NAME))
+
+
+def _check_lookup_rate(key: str) -> None:
+    now = time.monotonic()
+    bucket = _lookup_attempts[key]
+    while bucket and now - bucket[0] > _LOOKUP_WINDOW_SEC:
+        bucket.popleft()
+    if len(bucket) >= _LOOKUP_MAX:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many Researcher ID lookups. Wait a minute and try again.",
+        )
+    bucket.append(now)
+
+
+def _user_public_with_rid(user: dict) -> UserPublic:
+    settings = get_settings()
+    ensured = ensure_researcher_id(settings, user)
+    return UserPublic(**public_user(ensured))
 
 
 @router.post("/signup", response_model=UserPublic)
@@ -67,11 +103,38 @@ def logout(request: Request, response: Response) -> dict[str, str]:
 
 @router.get("/me", response_model=UserPublic)
 def me(request: Request) -> UserPublic:
-    user = current_user_from_request(request)
-    if user is None:
+    session = current_user_from_request(request)
+    if session is None:
         raise HTTPException(status_code=401, detail="Not signed in.")
-    return UserPublic(
-        user_id=str(user.get("user_id", "")),
-        email=str(user.get("email", "")),
-        name=str(user.get("name", "")),
-    )
+    settings = get_settings()
+    user = find_by_user_id(settings, str(session.get("user_id") or ""))
+    if user is None:
+        # Fall back to session fields; still try lazy ID if possible.
+        return UserPublic(
+            user_id=str(session.get("user_id", "")),
+            email=str(session.get("email", "")),
+            name=str(session.get("name", "")),
+            researcher_id=str(session.get("researcher_id", "")),
+        )
+    return _user_public_with_rid(user)
+
+
+@router.get("/researchers/{researcher_id}", response_model=ResearcherPublic)
+def lookup_researcher(researcher_id: str, request: Request) -> ResearcherPublic:
+    """Resolve a Researcher ID to a safe public card. Does not grant project access."""
+    session = current_user_from_request(request)
+    if session is None:
+        raise HTTPException(status_code=401, detail="Not signed in.")
+    _check_lookup_rate(str(session.get("user_id") or "anon"))
+    try:
+        rid = normalise_researcher_id(researcher_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    settings = get_settings()
+    user = find_by_researcher_id(settings, rid)
+    if user is None:
+        # Ensure lazy IDs exist so lookups work after first /me for older accounts —
+        # still return 404 if this specific ID is unknown.
+        raise HTTPException(status_code=404, detail="No researcher found with that ID.")
+    user = ensure_researcher_id(settings, user)
+    return ResearcherPublic(**researcher_public(user))

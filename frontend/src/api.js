@@ -27,6 +27,8 @@ async function request(path, options = {}) {
 
 export const api = {
   me: () => request("/auth/me"),
+  lookupResearcher: (researcherId) =>
+    request(`/auth/researchers/${encodeURIComponent(researcherId)}`),
   signup: (payload) =>
     request("/auth/signup", {
       method: "POST",
@@ -91,64 +93,265 @@ export const api = {
   deleteRecentAsk: (id) => request(`/workspace/recents/ask/${encodeURIComponent(id)}`, { method: "DELETE" }),
   deleteRecentPapers: (id) =>
     request(`/workspace/recents/papers/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  createPaperDraft: (payload) =>
-    request("/paper-drafts/", {
+  listProjects: (opts = {}) => {
+    const qs = new URLSearchParams();
+    if (opts.limit != null) qs.set("limit", String(opts.limit));
+    if (opts.include_archived != null) qs.set("include_archived", String(opts.include_archived));
+    const suffix = qs.toString() ? `?${qs}` : "";
+    // Trailing slash required: bare /projects 307-redirects to the API origin and drops the session cookie.
+    return request(`/projects/${suffix}`);
+  },
+  createProject: (payload) =>
+    request("/projects/", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
-  listPaperDrafts: (limit = 20) => request(`/paper-drafts/?limit=${limit}`),
-  getPaperDraft: (id) => request(`/paper-drafts/${encodeURIComponent(id)}`),
-  updatePaperDraft: (id, payload) =>
-    request(`/paper-drafts/${encodeURIComponent(id)}`, {
-      method: "PUT",
+  getProject: (id) => request(`/projects/${encodeURIComponent(id)}`),
+  updateProject: (id, payload) =>
+    request(`/projects/${encodeURIComponent(id)}`, {
+      method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
-  deletePaperDraft: (id) =>
-    request(`/paper-drafts/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  previewPaperDraft: async (id) => {
-    const response = await fetch(
-      `${BASE}/paper-drafts/${encodeURIComponent(id)}/preview.html`,
-      { credentials: "include" }
-    );
-    if (!response.ok) {
-      if (response.status === 401) {
-        window.dispatchEvent(new Event("selfrag-auth-lost"));
+  archiveProject: (id) =>
+    request(`/projects/${encodeURIComponent(id)}/archive`, { method: "POST" }),
+  deleteProject: (id) =>
+    request(`/projects/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  listPendingInvites: () => request("/projects/invites/pending"),
+  acceptProjectInvite: (payload) =>
+    request("/projects/invites/accept", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  rejectProjectInvite: (payload) =>
+    request("/projects/invites/reject", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  createProjectInvite: (projectId, payload) =>
+    request(`/projects/${encodeURIComponent(projectId)}/invites`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  revokeProjectInvite: (projectId, inviteId) =>
+    request(
+      `/projects/${encodeURIComponent(projectId)}/invites/${encodeURIComponent(inviteId)}`,
+      { method: "DELETE" }
+    ),
+  updateProjectMemberRole: (projectId, memberUserId, role) =>
+    request(
+      `/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(memberUserId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role }),
       }
-      let detail = response.statusText;
-      try {
-        const body = await response.json();
-        detail = body.detail?.message || body.detail || JSON.stringify(body);
-      } catch {
-        /* ignore */
+    ),
+  removeProjectMember: (projectId, memberUserId) =>
+    request(
+      `/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(memberUserId)}`,
+      { method: "DELETE" }
+    ),
+  addProjectNote: (projectId, text, extras = {}) =>
+    request(`/projects/${encodeURIComponent(projectId)}/notes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, ...extras }),
+    }),
+  updateProjectNote: (projectId, noteId, payload) =>
+    request(
+      `/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
       }
-      throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
-    }
-    return response.text();
-  },
-  exportPaperDraft: async (id, format) => {
-    const response = await fetch(`${BASE}/paper-drafts/${encodeURIComponent(id)}/export.${format}`, {
-      credentials: "include",
-    });
-    if (!response.ok) {
-      if (response.status === 401) {
-        window.dispatchEvent(new Event("selfrag-auth-lost"));
+    ),
+  deleteProjectNote: (projectId, noteId) =>
+    request(
+      `/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`,
+      { method: "DELETE" }
+    ),
+  addProjectReview: (projectId, text, target = "project") =>
+    request(`/projects/${encodeURIComponent(projectId)}/reviews`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, target }),
+    }),
+  deleteProjectReview: (projectId, reviewId) =>
+    request(
+      `/projects/${encodeURIComponent(projectId)}/reviews/${encodeURIComponent(reviewId)}`,
+      { method: "DELETE" }
+    ),
+  listProjectSources: (projectId) =>
+    request(`/projects/${encodeURIComponent(projectId)}/sources`),
+  linkProjectSource: (projectId, documentId) =>
+    request(`/projects/${encodeURIComponent(projectId)}/sources`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ document_id: documentId }),
+    }),
+  importProjectSource: (projectId, payload) =>
+    request(`/projects/${encodeURIComponent(projectId)}/sources/import`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  unlinkProjectSource: (projectId, documentId) =>
+    request(
+      `/projects/${encodeURIComponent(projectId)}/sources/${encodeURIComponent(documentId)}`,
+      { method: "DELETE" }
+    ),
+  listProjectEvidence: (projectId) =>
+    request(`/projects/${encodeURIComponent(projectId)}/evidence`),
+  addProjectEvidence: (projectId, payload) =>
+    request(`/projects/${encodeURIComponent(projectId)}/evidence`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  removeProjectEvidence: (projectId, evidenceId) =>
+    request(
+      `/projects/${encodeURIComponent(projectId)}/evidence/${encodeURIComponent(evidenceId)}`,
+      { method: "DELETE" }
+    ),
+  getProjectManuscript: (projectId) =>
+    request(`/projects/${encodeURIComponent(projectId)}/manuscript`),
+  createProjectManuscript: (projectId, payload = {}) =>
+    request(`/projects/${encodeURIComponent(projectId)}/manuscript`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  updateProjectManuscript: (projectId, payload) =>
+    request(`/projects/${encodeURIComponent(projectId)}/manuscript`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  updateManuscriptSections: (projectId, sections) =>
+    request(`/projects/${encodeURIComponent(projectId)}/manuscript/sections`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(sections),
+    }),
+  addManuscriptSection: (projectId, payload) =>
+    request(`/projects/${encodeURIComponent(projectId)}/manuscript/sections`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  patchManuscriptSection: (projectId, sectionId, payload) =>
+    request(
+      `/projects/${encodeURIComponent(projectId)}/manuscript/sections/${encodeURIComponent(sectionId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
       }
-      let detail = response.statusText;
-      try {
-        const body = await response.json();
-        detail = body.detail?.message || body.detail || JSON.stringify(body);
-      } catch {
-        /* ignore */
+    ),
+  reorderManuscriptSections: (projectId, sectionIds) =>
+    request(`/projects/${encodeURIComponent(projectId)}/manuscript/sections/order`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ section_ids: sectionIds }),
+    }),
+  deleteManuscriptSection: (projectId, sectionId) =>
+    request(
+      `/projects/${encodeURIComponent(projectId)}/manuscript/sections/${encodeURIComponent(sectionId)}`,
+      { method: "DELETE" }
+    ),
+  assignManuscriptSection: (projectId, key, assigneeUserId, sectionId = "") =>
+    request(`/projects/${encodeURIComponent(projectId)}/manuscript/assign`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        key: key || "",
+        section_id: sectionId || "",
+        assignee_user_id: assigneeUserId || "",
+      }),
+    }),
+  addManuscriptSectionComment: (projectId, sectionId, text) =>
+    request(
+      `/projects/${encodeURIComponent(projectId)}/manuscript/sections/${encodeURIComponent(sectionId)}/comments`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
       }
-      throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
-    }
-    const blob = await response.blob();
-    const disposition = response.headers.get("Content-Disposition") || "";
-    const match = /filename="([^"]+)"/.exec(disposition);
-    return { blob, filename: match?.[1] || `paper.${format}` };
-  },
+    ),
+  citeManuscriptSource: (projectId, documentId, style = "apa") =>
+    request(`/projects/${encodeURIComponent(projectId)}/manuscript/cite`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ document_id: documentId, style }),
+    }),
+  manuscriptAi: (projectId, payload) =>
+    request(`/projects/${encodeURIComponent(projectId)}/manuscript/ai`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  getManuscriptReview: (projectId) =>
+    request(`/projects/${encodeURIComponent(projectId)}/manuscript/review`),
+  runManuscriptReview: (projectId, payload = {}) =>
+    request(`/projects/${encodeURIComponent(projectId)}/manuscript/review`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  updateManuscriptReviewIssue: (projectId, issueId, payload) =>
+    request(
+      `/projects/${encodeURIComponent(projectId)}/manuscript/review/${encodeURIComponent(issueId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }
+    ),
+  getManuscriptChecklist: (projectId) =>
+    request(`/projects/${encodeURIComponent(projectId)}/manuscript/checklist`),
+  refreshManuscriptChecklist: (projectId) =>
+    request(`/projects/${encodeURIComponent(projectId)}/manuscript/checklist/refresh`, {
+      method: "POST",
+    }),
+  updateManuscriptChecklistItem: (projectId, itemKey, payload) =>
+    request(
+      `/projects/${encodeURIComponent(projectId)}/manuscript/checklist/${encodeURIComponent(itemKey)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }
+    ),
+  createProjectTask: (projectId, payload) =>
+    request(`/projects/${encodeURIComponent(projectId)}/tasks`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  updateProjectTask: (projectId, taskId, payload) =>
+    request(
+      `/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }
+    ),
+  addProjectTaskComment: (projectId, taskId, text) =>
+    request(
+      `/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(taskId)}/comments`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      }
+    ),
 };
 
 export function pct(value) {

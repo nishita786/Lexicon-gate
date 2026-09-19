@@ -20,3 +20,11 @@ class UserPublic(BaseModel):
     user_id: str
     email: str
     name: str = ""
+    researcher_id: str = ""
+
+
+class ResearcherPublic(BaseModel):
+    """Safe card for Find Researcher — no email or secrets."""
+
+    researcher_id: str
+    display_name: str = "Researcher"

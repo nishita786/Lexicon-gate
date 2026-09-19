@@ -1,4 +1,4 @@
-"""Workspace research recents API."""
+"""Workspace recents API."""
 
 from __future__ import annotations
 
@@ -62,19 +62,10 @@ def workspace_recents(
             )
         )
 
-    # Prefer explicit timestamps for papers; Ask items (no stamp) stay near top by insertion order.
-    items.sort(
-        key=lambda item: item.created_at or "",
-        reverse=True,
-    )
-    # Stable-ish merge: papers with timestamps first by time; ask items without stamps
-    # should still appear. Put ask items (None created_at) after dated paper items by
-    # interleaving with ask first when stamps missing.
     ask_items = [i for i in items if i.kind == "ask"]
     paper_items = [i for i in items if i.kind == "papers"]
+    paper_items.sort(key=lambda item: item.created_at or "", reverse=True)
     merged: list[WorkspaceRecentItem] = []
-    # Papers already newest-first; ask already newest-first from history.recent.
-    # Interleave by taking from ask then papers to keep both visible.
     ai = pi = 0
     while len(merged) < limit and (ai < len(ask_items) or pi < len(paper_items)):
         if ai < len(ask_items):

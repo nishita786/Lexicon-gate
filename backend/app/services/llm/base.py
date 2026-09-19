@@ -22,7 +22,7 @@ class LLMTask(str, Enum):
     extract_claims = "extract_claims"
     extract_paper_structure = "extract_paper_structure"
     reflect = "reflect"
-    paper_draft = "paper_draft"
+    manuscript_assist = "manuscript_assist"
 
 
 @dataclass(slots=True)

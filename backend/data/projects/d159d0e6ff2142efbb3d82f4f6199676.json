@@ -1,0 +1,37 @@
+{
+  "project_id": "d159d0e6ff2142efbb3d82f4f6199676",
+  "title": "self rag",
+  "topic": "rag",
+  "description": "",
+  "owner_id": "955bd13f9c604156b1606092f340fc8d",
+  "members": [
+    {
+      "user_id": "955bd13f9c604156b1606092f340fc8d",
+      "email": "nishitakm786@gmail.com",
+      "name": "Nishita Kumari",
+      "role": "owner",
+      "researcher_id": ""
+    }
+  ],
+  "status": "active",
+  "document_ids": [],
+  "evidence_notes": [],
+  "notes": [],
+  "reviews": [],
+  "activity": [
+    {
+      "activity_id": "febd16a2d4e540e08245002fbfab0b65",
+      "type": "project_created",
+      "actor_id": "955bd13f9c604156b1606092f340fc8d",
+      "actor_email": "nishitakm786@gmail.com",
+      "actor_name": "Nishita Kumari",
+      "message": "Created project \u201cself rag\u201d.",
+      "meta": {},
+      "created_at": "2026-09-19T13:54:12.761341+00:00"
+    }
+  ],
+  "invites": [],
+  "manuscript_id": null,
+  "created_at": "2026-09-19T13:54:12.760777+00:00",
+  "updated_at": "2026-09-19T13:54:12.760777+00:00"
+}
