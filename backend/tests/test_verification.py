@@ -75,6 +75,17 @@ def test_query_rewriting_targets_gaps():
     assert any(term in joined for term in ("overfitting", "regularization", "benefits", "performance"))
 
 
+def test_definition_rewrite_uses_subject_noun_phrase():
+    rewrites = rewrite_queries(
+        "what is random recurrent neural network",
+        question_type="definition",
+        limit=3,
+    )
+    assert rewrites
+    assert rewrites[0].lower() == "random recurrent neural network"
+    assert "what is" not in rewrites[0].lower()
+
+
 def test_adaptive_controller_caps_attempts(settings):
     controller = AdaptiveController(settings)
     analysis = QueryAnalysis(
@@ -183,3 +194,92 @@ def test_confidence_is_evidence_derived_not_arbitrary():
     assert high.confidence > 0.7
     assert low.confidence == 0.0
     assert "not a guarantee" in high.caveat.lower()
+
+
+def test_hallucination_ignores_according_discourse_lead():
+    from app.text_utils import extract_entities
+
+    answer = "According to the sources, Dropout reduces overfitting by preventing co-adaptation."
+    evidence = [
+        _item(
+            "c1",
+            "The main advantage of dropout is that it reduces overfitting by preventing co-adaptation of hidden units.",
+            "handbook",
+            1,
+        )
+    ]
+    entities = [e.lower() for e in extract_entities(answer)]
+    assert "according" not in entities
+    claims = [
+        Claim(
+            claim_id="c1",
+            text="Dropout reduces overfitting by preventing co-adaptation.",
+            status=ClaimStatus.supported,
+            support_score=0.9,
+        )
+    ]
+    report = detect_hallucinations(answer, claims, evidence)
+    assert "According" not in report.ungrounded_entities
+    assert not any("According" in flag for flag in report.flags)
+    assert report.hallucination_detected is False
+
+
+def test_hallucination_ignores_in_this_context_boilerplate():
+    answer = "In this context, Dropout reduces overfitting."
+    evidence = [
+        _item("c1", "Dropout reduces overfitting by preventing co-adaptation.", "handbook", 1)
+    ]
+    claims = [
+        Claim(
+            claim_id="c1",
+            text="Dropout reduces overfitting.",
+            status=ClaimStatus.supported,
+            support_score=0.9,
+        )
+    ]
+    report = detect_hallucinations(answer, claims, evidence)
+    assert not any(e.lower() in {"context", "contrast"} for e in report.ungrounded_entities)
+    assert report.hallucination_detected is False
+
+
+def test_hallucination_ignores_in_contrast_boilerplate():
+    answer = "In contrast, Dropout reduces overfitting."
+    evidence = [
+        _item("c1", "Dropout reduces overfitting by preventing co-adaptation.", "handbook", 1)
+    ]
+    claims = [
+        Claim(
+            claim_id="c1",
+            text="Dropout reduces overfitting.",
+            status=ClaimStatus.supported,
+            support_score=0.9,
+        )
+    ]
+    report = detect_hallucinations(answer, claims, evidence)
+    assert "Contrast" not in report.ungrounded_entities
+    assert report.hallucination_detected is False
+
+
+def test_paraphrase_claim_not_unsupported_by_lexical_verifier():
+    claims = [
+        Claim(
+            claim_id="c1",
+            text="Dropout's primary benefit is reducing overfitting and improving generalization on held-out data.",
+        )
+    ]
+    evidence = [
+        _item(
+            "c1",
+            "The main advantage of dropout is that it reduces overfitting by preventing co-adaptation of hidden units. Empirically, dropout improves generalization performance on held-out data.",
+            "handbook",
+            1,
+        )
+    ]
+    result = ClaimVerifier(idf={}).llm_judge_verify(
+        claims, evidence, "What is the main advantage of dropout?"
+    )
+    assert result.claims[0].status in (
+        ClaimStatus.supported,
+        ClaimStatus.partially_supported,
+    )
+    assert result.claims[0].status is not ClaimStatus.unsupported

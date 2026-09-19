@@ -31,7 +31,6 @@ from ..models.documents import (
 from ..services.clustering import cluster_documents
 from ..models.papers import PaperImportRequest, PaperImportResponse, PaperSearchResponse
 from ..services.papers.import_paper import import_paper
-from ..services.papers.search import search_papers
 from ..models.evaluation import EvaluateRequest, EvaluationRun
 from ..models.query import (
     CompareRequest,
@@ -279,19 +278,37 @@ def reload_demo_corpus() -> dict[str, Any]:
 def papers_search(
     q: str = Query(default="", min_length=0),
     limit: int = Query(default=10, ge=1, le=25),
+    filter: str = Query(default="all", alias="filter"),
 ) -> PaperSearchResponse:
+    from ..services.papers.search import search_papers_detailed
+
     query = q.strip()
     if not query:
         raise HTTPException(status_code=400, detail="Search query is required.")
+    filt = (filter or "all").strip().lower()
+    if filt not in {"all", "academic", "research_web", "open_access"}:
+        raise HTTPException(
+            status_code=400,
+            detail="filter must be one of: all, academic, research_web, open_access",
+        )
     try:
-        papers, provider = search_papers(query, limit=limit)
+        papers, provider, providers_used, notes = search_papers_detailed(
+            query, limit=limit, search_filter=filt
+        )
     except Exception as exc:
         logger.exception("Paper search failed")
         raise HTTPException(
             status_code=502,
             detail="Paper search is temporarily unavailable. Try again in a few seconds.",
         ) from exc
-    return PaperSearchResponse(query=query, provider=provider, papers=papers)
+    return PaperSearchResponse(
+        query=query,
+        provider=provider,
+        filter=filt,  # type: ignore[arg-type]
+        providers_used=providers_used,
+        notes=notes,
+        papers=papers,
+    )
 
 
 @router.post("/papers/import", response_model=PaperImportResponse, tags=["papers"])

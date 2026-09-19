@@ -10,6 +10,7 @@ model.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Sequence
@@ -49,7 +50,14 @@ from ..verification.confidence import score_confidence
 from ..verification.contradiction import detect_contradictions
 from ..verification.evidence_gate import EvidenceGate, decision_is_unrelated
 from ..verification.hallucination import detect_hallucinations
-from ..text_utils import normalise_query_text, remainder_question_clause
+from ..text_utils import (
+    content_tokens,
+    normalise_query_text,
+    question_aspects,
+    remainder_question_clause,
+    split_sentences,
+    uncovered_aspects,
+)
 from .common import (
     TraceRecorder,
     UsageCounter,
@@ -341,11 +349,14 @@ class PipelineRunner:
             )
 
         if self.kb.is_empty():
+            refuse, mismatch = self._refusal_answer(
+                original_query, [], None, unrelated=True, empty_library=True,
+            )
             return self._finalise(
-                query_id, original_query, UNRELATED_ANSWER, AnswerStatus.insufficient_evidence,
+                query_id, original_query, refuse, AnswerStatus.insufficient_evidence,
                 [], [], [], [], trace, usage, t0, analysis, [],
                 unrelated_to_sources=True,
-                mismatch_detail="The library is empty, so nothing can support this question.",
+                mismatch_detail=mismatch,
             )
 
         current_k = self.controller.initial_top_k(analysis, override=top_k)
@@ -366,8 +377,27 @@ class PipelineRunner:
         for attempt in range(1, max_attempts + 1):
             usage.retrieval_attempts += 1
             usage.retrieval_calls += 1
-            raw = self.retriever.retrieve(current_query, top_k=current_k, document_ids=document_ids)
+            raw = self._retrieve_for_scope(
+                current_query, top_k=current_k, document_ids=document_ids
+            )
             usage.chunks_examined += len(raw)
+            # Multi-aspect questions: pull evidence for each subquestion as well.
+            aspects = question_aspects(search_query)
+            if len(aspects) >= 2:
+                seen = {item.chunk_id for item in raw if item.chunk_id}
+                per_aspect_k = max(2, current_k // len(aspects))
+                for aspect in aspects:
+                    usage.retrieval_calls += 1
+                    part = self._retrieve_for_scope(
+                        aspect, top_k=per_aspect_k, document_ids=document_ids
+                    )
+                    usage.chunks_examined += len(part)
+                    for item in part:
+                        if item.chunk_id and item.chunk_id in seen:
+                            continue
+                        if item.chunk_id:
+                            seen.add(item.chunk_id)
+                        raw.append(item)
             evidence = number_citations(raw)
             mode_label = cfg.retrieval_mode.value
             trace.add(
@@ -453,8 +483,9 @@ class PipelineRunner:
         if cfg.evidence_gate and last_action == "abstain":
             last_decision = decisions[-1] if decisions else None
             unrelated = decision_is_unrelated(last_decision)
-            refuse = UNRELATED_ANSWER if unrelated else INSUFFICIENT_ANSWER
-            mismatch = self._mismatch_detail(original_query, evidence, last_decision) if unrelated else None
+            refuse, mismatch = self._refusal_answer(
+                original_query, evidence, last_decision, unrelated=unrelated,
+            )
             trace.add(
                 "abstain",
                 "Question does not match the indexed files" if unrelated else "Insufficient evidence — refusing to answer",
@@ -499,7 +530,14 @@ class PipelineRunner:
             not in (AnswerStatus.insufficient_evidence, AnswerStatus.no_retrieval_needed)
         ):
             answer, status, claims = self._verify_and_correct(
-                search_query, evidence, answer, status, claims, usage, trace
+                search_query,
+                evidence,
+                answer,
+                status,
+                claims,
+                usage,
+                trace,
+                document_ids=document_ids,
             )
 
         if cfg.self_reflection and not cfg.claim_verification:
@@ -524,6 +562,7 @@ class PipelineRunner:
         claims: list[Claim],
         usage: UsageCounter,
         trace: TraceRecorder,
+        document_ids: Sequence[str] | None = None,
     ) -> tuple[str, AnswerStatus, list[Claim]]:
         settings = self.settings
         result = self.verifier.verify(claims, evidence, query)
@@ -543,6 +582,30 @@ class PipelineRunner:
             ),
             metrics={"support_rate": result.support_rate},
         )
+
+        # One claim-driven retrieval expand before rewriting / abstaining.
+        if (
+            result.important_unsupported
+            and not self.config.skip_retrieval
+            and self.config.adaptive_retrieval
+        ):
+            expanded = self._expand_evidence_for_claims(
+                query,
+                result.important_unsupported,
+                evidence,
+                document_ids=document_ids,
+                usage=usage,
+                trace=trace,
+            )
+            if expanded is not None:
+                evidence[:] = expanded
+                result = self.verifier.verify(claims, evidence, query)
+                claims = result.claims
+                trace.add(
+                    "verify",
+                    f"After claim expand: {result.n_supported + result.n_partial}/{len(claims)} verified",
+                    metrics={"support_rate": result.support_rate},
+                )
 
         while (
             self.config.self_correction
@@ -577,6 +640,98 @@ class PipelineRunner:
             return self._enforce_supported_answer(answer, status, claims, trace)
         return answer, status, claims
 
+    def _expand_evidence_for_claims(
+        self,
+        query: str,
+        unsupported: list[Claim],
+        evidence: list[EvidenceItem],
+        *,
+        document_ids: Sequence[str] | None,
+        usage: UsageCounter,
+        trace: TraceRecorder,
+    ) -> list[EvidenceItem] | None:
+        """Retrieve more chunks targeted at unsupported claims; merge once."""
+
+        settings = self.settings
+        focus_parts: list[str] = []
+        for claim in unsupported[:4]:
+            tokens = content_tokens(claim.text)[:14]
+            if tokens:
+                focus_parts.append(" ".join(tokens))
+        focus = " ".join(focus_parts).strip() or query
+        if not focus:
+            return None
+
+        top_k = min(
+            settings.max_top_k,
+            max(len(evidence), 1) + settings.top_k_increment,
+        )
+        usage.retrieval_calls += 1
+        usage.retrieval_attempts += 1
+        raw = self._retrieve_for_scope(focus, top_k=top_k, document_ids=document_ids)
+        usage.chunks_examined += len(raw)
+
+        seen = {item.chunk_id for item in evidence if item.chunk_id}
+        merged = list(evidence)
+        added = 0
+        for item in raw:
+            if item.chunk_id and item.chunk_id in seen:
+                continue
+            if item.chunk_id:
+                seen.add(item.chunk_id)
+            merged.append(item)
+            added += 1
+
+        if added == 0:
+            return None
+
+        numbered = number_citations(merged)
+        trace.add(
+            "claim_expand",
+            "Expanded retrieval for unsupported claims",
+            detail=f"Added {added} chunk(s) via {focus!r}",
+            metrics={"k": top_k, "added": added, "n": len(numbered)},
+        )
+        return numbered
+
+    def _retrieve_for_scope(
+        self,
+        query: str,
+        *,
+        top_k: int,
+        document_ids: Sequence[str] | None,
+    ) -> list[EvidenceItem]:
+        """Retrieve evidence; balance across docs when two or more are scoped."""
+
+        ids = [d for d in (document_ids or []) if d]
+        if len(ids) < 2:
+            return self.retriever.retrieve(query, top_k=top_k, document_ids=document_ids)
+
+        per_doc = max(2, (top_k + len(ids) - 1) // len(ids))
+        merged: list[EvidenceItem] = []
+        seen: set[str] = set()
+        for doc_id in ids:
+            hits = self.retriever.retrieve(query, top_k=per_doc, document_ids=[doc_id])
+            for hit in hits:
+                if hit.chunk_id and hit.chunk_id in seen:
+                    continue
+                if hit.chunk_id:
+                    seen.add(hit.chunk_id)
+                merged.append(hit)
+
+        if len(merged) < top_k:
+            extra = self.retriever.retrieve(query, top_k=top_k, document_ids=ids)
+            for hit in extra:
+                if hit.chunk_id and hit.chunk_id in seen:
+                    continue
+                if hit.chunk_id:
+                    seen.add(hit.chunk_id)
+                merged.append(hit)
+                if len(merged) >= top_k:
+                    break
+
+        return merged[: max(top_k, len(ids) * 2)]
+
     def _enforce_supported_answer(
         self,
         answer: str,
@@ -598,12 +753,34 @@ class PipelineRunner:
 
         stripped, kept = drop_unsupported_sentences(answer, good, bad)
         if not stripped or stripped == INSUFFICIENT_ANSWER:
+            if len(good) >= 2:
+                rebuilt = _answer_from_supported_claims(good)
+                if rebuilt:
+                    trace.add(
+                        "correction",
+                        "Rebuilt answer from supported claims after unsupported drop",
+                        status="warn",
+                        detail=f"Used {len(good)} supported claim(s)",
+                    )
+                    return rebuilt, AnswerStatus.answered, kept
             trace.add(
                 "abstain",
                 "Unsupported claims could not be rewritten from evidence",
                 status="warn",
             )
             return INSUFFICIENT_ANSWER, AnswerStatus.insufficient_evidence, claims
+
+        remaining = split_sentences(stripped, min_chars=8)
+        if len(remaining) < 2 and len(good) >= 2:
+            rebuilt = _answer_from_supported_claims(good)
+            if rebuilt:
+                trace.add(
+                    "correction",
+                    "Expanded thin post-filter answer from supported claims",
+                    status="warn",
+                    detail=f"Was {len(remaining)} sentence(s); rebuilt from {len(good)} claim(s)",
+                )
+                return rebuilt, AnswerStatus.answered, kept
 
         trace.add(
             "correction",
@@ -636,11 +813,18 @@ class PipelineRunner:
             system = UNGROUNDED_SYSTEM
         else:
             prompt = answer_prompt(query, evidence, analysis)
+            aspects = question_aspects(query)
             extra_focus = remainder_question_clause(query)
+            focus_terms = list(aspects) if len(aspects) >= 2 else (
+                [extra_focus] if extra_focus else list(analysis.keywords[:6])
+            )
+            if extra_focus and extra_focus not in focus_terms:
+                focus_terms.append(extra_focus)
             payload_extra = {
                 "include_lead": True,
                 "question_type": analysis.question_type,
-                "focus_terms": [extra_focus] if extra_focus else list(analysis.keywords[:6]),
+                "focus_terms": focus_terms,
+                "aspects": aspects,
             }
             system = GROUNDED_SYSTEM if self.config.grounded_generation else None
 
@@ -757,20 +941,83 @@ class PipelineRunner:
         usage.add_llm(response.prompt_tokens, response.completion_tokens)
         return response
 
-    def _mismatch_detail(
-        self,
-        query: str,
-        evidence: list[EvidenceItem],
-        decision: EvidenceGateDecision | None,
-    ) -> str:
+    def _indexed_source_titles(
+        self, evidence: list[EvidenceItem] | None = None
+    ) -> list[str]:
         docs = []
         try:
             docs = self.kb.store.list_documents()
         except Exception:
             docs = []
         titles = [doc.title or doc.name for doc in docs[:8] if (doc.title or doc.name)]
-        if not titles:
-            titles = list(dict.fromkeys(item.document_name for item in evidence if item.document_name))[:8]
+        if titles:
+            return titles
+        evidence = evidence or []
+        return list(
+            dict.fromkeys(item.document_name for item in evidence if item.document_name)
+        )[:8]
+
+    def _refusal_answer(
+        self,
+        query: str,
+        evidence: list[EvidenceItem],
+        decision: EvidenceGateDecision | None,
+        *,
+        unrelated: bool = False,
+        empty_library: bool = False,
+    ) -> tuple[str, str]:
+        """Compose a chat-like refusal that names indexed sources."""
+
+        titles = self._indexed_source_titles(evidence)
+        if titles:
+            if len(titles) == 1:
+                sources_phrase = titles[0]
+            elif len(titles) == 2:
+                sources_phrase = f"{titles[0]} and {titles[1]}"
+            else:
+                sources_phrase = ", ".join(titles[:-1]) + f", and {titles[-1]}"
+            searched = f"your indexed sources ({sources_phrase})"
+        else:
+            searched = "your indexed sources"
+
+        q = (query or "").strip() or "this question"
+        tip = (
+            " Try asking about a term that appears in the paper, "
+            "or add a source that defines it."
+        )
+        invent = (
+            "I won't invent a definition that isn't in those files."
+            if re.match(r"(?i)^what\s+(?:is|are)\b", q)
+            and not re.match(r"(?i)^what\s+(?:is|are)\s+the\b", q)
+            else "I won't invent an answer that isn't grounded in those files."
+        )
+
+        if empty_library:
+            answer = (
+                f"I searched {searched}. The library is empty, so nothing can "
+                f"support: '{q}'. {invent}{tip}"
+            )
+            mismatch = (
+                f"Asked: {q}. Indexed sources cover: (none — library is empty)."
+            )
+            return answer, mismatch
+
+        answer = (
+            f"I searched {searched}. They do not contain enough support to answer: "
+            f"'{q}'. {invent}{tip}"
+        )
+        if unrelated and not titles:
+            answer = UNRELATED_ANSWER
+        mismatch = self._mismatch_detail(query, evidence, decision)
+        return answer, mismatch
+
+    def _mismatch_detail(
+        self,
+        query: str,
+        evidence: list[EvidenceItem],
+        decision: EvidenceGateDecision | None,
+    ) -> str:
+        titles = self._indexed_source_titles(evidence)
         covered = ", ".join(titles) if titles else "the indexed files"
         rationale = (decision.rationale if decision else "") or ""
         return (
@@ -818,7 +1065,12 @@ class PipelineRunner:
                 metrics={"severity": hallucination.severity},
             )
             if blocked:
-                answer = INSUFFICIENT_ANSWER
+                refuse, mismatch = self._refusal_answer(
+                    query, evidence, last_gate, unrelated=False,
+                )
+                answer = refuse
+                if not mismatch_detail:
+                    mismatch_detail = mismatch
                 status = AnswerStatus.insufficient_evidence
                 trace.add(
                     "abstain",
@@ -832,7 +1084,12 @@ class PipelineRunner:
             status is AnswerStatus.answered
             and confidence.confidence < self.settings.abstain_confidence_threshold
         ):
-            answer = INSUFFICIENT_ANSWER
+            refuse, mismatch = self._refusal_answer(
+                query, evidence, last_gate, unrelated=False,
+            )
+            answer = refuse
+            if not mismatch_detail:
+                mismatch_detail = mismatch
             status = AnswerStatus.insufficient_evidence
             trace.add(
                 "abstain",
@@ -851,12 +1108,56 @@ class PipelineRunner:
                 },
             )
 
+        gap_aspects: list[str] = []
+        if (
+            answer
+            and answer != INSUFFICIENT_ANSWER
+            and status
+            in (AnswerStatus.answered, AnswerStatus.conflicting_evidence)
+            and not unrelated_to_sources
+        ):
+            claim_blob = " ".join(c.text for c in claims if c.status is ClaimStatus.supported)
+            coverage_text = f"{answer} {claim_blob}".strip()
+            gap_aspects = uncovered_aspects(query, coverage_text)
+            if gap_aspects:
+                note = (
+                    "Not covered by the indexed sources: "
+                    + "; ".join(gap_aspects[:4])
+                    + "."
+                )
+                if "Not covered by the indexed sources:" not in answer:
+                    answer = f"{answer.rstrip()}\n\n{note}"
+                if not mismatch_detail:
+                    mismatch_detail = note
+                trace.add(
+                    "coverage",
+                    "Question aspects incompletely covered by the answer",
+                    status="warn",
+                    detail=note,
+                    metrics={"uncovered_aspects": len(gap_aspects)},
+                )
+
         if status is AnswerStatus.answered:
             trace.add("final", "Final answer approved")
         elif status is AnswerStatus.conflicting_evidence:
             trace.add("final", "Final answer reports a source conflict", status="warn")
-        elif unrelated_to_sources:
-            trace.add("final", "Question does not match the indexed files", status="warn")
+        elif status is AnswerStatus.insufficient_evidence:
+            if answer in (INSUFFICIENT_ANSWER, UNRELATED_ANSWER):
+                refuse, mismatch = self._refusal_answer(
+                    query,
+                    evidence,
+                    last_gate,
+                    unrelated=unrelated_to_sources,
+                )
+                answer = refuse
+                if not mismatch_detail:
+                    mismatch_detail = mismatch
+            elif not mismatch_detail:
+                mismatch_detail = self._mismatch_detail(query, evidence, last_gate)
+            if unrelated_to_sources:
+                trace.add("final", "Question does not match the indexed files", status="warn")
+            else:
+                trace.add("final", "Answer refused — insufficient evidence", status="warn")
         else:
             trace.add("final", f"Final status: {status.value}", status="warn")
 
@@ -884,6 +1185,7 @@ class PipelineRunner:
             },
             unrelated_to_sources=unrelated_to_sources,
             mismatch_detail=mismatch_detail,
+            uncovered_aspects=gap_aspects,
         )
 
 
@@ -894,3 +1196,23 @@ def _llm_answer_text(response: LLMResponse) -> str:
     if "answer" in structured:
         return str(structured.get("answer") or "")
     return (response.text or "").strip()
+
+
+_INLINE_CITE_RE = re.compile(r"\[\d+\]")
+
+
+def _answer_from_supported_claims(claims: Sequence[Claim]) -> str:
+    """Join supported claim texts into a short paragraph with citation markers."""
+
+    parts: list[str] = []
+    for claim in claims:
+        text = (claim.text or "").strip()
+        if not text or text == INSUFFICIENT_ANSWER:
+            continue
+        if not text.endswith((".", "!", "?")):
+            text += "."
+        cites = [int(c) for c in claim.supporting_citations if isinstance(c, int) or str(c).isdigit()]
+        if cites and not _INLINE_CITE_RE.search(text):
+            text = f"{text} [{cites[0]}]"
+        parts.append(text)
+    return " ".join(parts).strip()

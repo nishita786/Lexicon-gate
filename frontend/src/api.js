@@ -51,8 +51,13 @@ export const api = {
     return request("/documents/upload", { method: "POST", body: data });
   },
   deleteDocument: (id) => request(`/documents/${id}`, { method: "DELETE" }),
-  searchPapers: (q, limit = 10) =>
-    request(`/papers/search?q=${encodeURIComponent(q)}&limit=${limit}`),
+  searchPapers: (q, opts = {}) => {
+    const limit = opts.limit ?? 10;
+    const filter = opts.filter ?? "all";
+    return request(
+      `/papers/search?q=${encodeURIComponent(q)}&limit=${limit}&filter=${encodeURIComponent(filter)}`
+    );
+  },
   importPaper: (payload) =>
     request("/papers/import", {
       method: "POST",

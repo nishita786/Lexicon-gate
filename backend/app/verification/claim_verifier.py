@@ -223,8 +223,9 @@ def _best_span_for_claim(
             if claim_numbers
             else 0.0
         )
-        # A claim whose numbers never appear in the sentence cannot be fully supported.
-        support = clamp(0.70 * lexical + 0.18 * entity + 0.12 * numeric)
+        # Prefer IDF/stem containment over brittle entity string matches so
+        # paraphrases stay supported when meaning overlaps the passage.
+        support = clamp(0.78 * lexical + 0.10 * entity + 0.12 * numeric)
         if claim_numbers and not (claim_numbers & sentence_numbers):
             support *= 0.55
 

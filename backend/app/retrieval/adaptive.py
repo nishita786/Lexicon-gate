@@ -16,6 +16,7 @@ from ..config import Settings, get_settings
 from ..models.query import EvidenceGateDecision, QueryAnalysis
 from ..services.llm.base import LLMProvider, LLMRequest, LLMTask
 from ..services.llm import extractive_engine as engine
+from ..text_utils import definition_subject
 
 
 REWRITE_PROMPT = """Rewrite the user question into up to {limit} alternative search queries
@@ -132,6 +133,12 @@ class AdaptiveController:
         llm: LLMProvider | None,
         corpus_terms: list[str] | None,
     ) -> list[str]:
+        prioritized: list[str] = []
+        if analysis.question_type == "definition":
+            subject = definition_subject(analysis.original_query)
+            if subject and subject.lower() != analysis.original_query.lower().strip():
+                prioritized.append(subject)
+
         payload = {
             "query": analysis.original_query,
             "keywords": analysis.keywords,
@@ -140,6 +147,7 @@ class AdaptiveController:
             "corpus_terms": corpus_terms or [],
             "limit": 3,
         }
+        generated: list[str] = []
         if llm is not None:
             try:
                 response = llm.generate(
@@ -156,14 +164,18 @@ class AdaptiveController:
                 )
                 rewrites = (response.structured or {}).get("rewrites") or []
                 if rewrites:
-                    return [str(r).strip() for r in rewrites if str(r).strip()]
+                    generated = [str(r).strip() for r in rewrites if str(r).strip()]
             except Exception:
                 pass
-        return engine.rewrite_queries(
-            query=analysis.original_query,
-            keywords=analysis.keywords,
-            entities=analysis.entities,
-            uncovered_terms=decision.uncovered_terms,
-            corpus_terms=corpus_terms or [],
-            limit=3,
-        )
+        if not generated:
+            generated = engine.rewrite_queries(
+                query=analysis.original_query,
+                keywords=analysis.keywords,
+                entities=analysis.entities,
+                uncovered_terms=decision.uncovered_terms,
+                corpus_terms=corpus_terms or [],
+                limit=3,
+                question_type=analysis.question_type,
+            )
+        # Subject noun phrase first so definition questions retry the core term.
+        return [*prioritized, *generated]

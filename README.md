@@ -7,7 +7,7 @@ It will refuse when the sources cannot support a reliable answer. It does not fi
 ## What you get
 
 1. **Ask** — default home: question your library with one verification badge, citations, and evidence; **New Chat** starts a blank session; **Recents** in the sidebar reopen past Ask chats and paper searches.
-2. **Find papers** — search Semantic Scholar (OpenAlex fallback) and add a paper to your library.
+2. **Find papers** — search with filters (**All**, **Academic Papers**, **Research Websites**, **Open Access**) across Semantic Scholar, OpenAlex, arXiv, and optional [Tavily](https://tavily.com) web search (`SELFRAG_TAVILY_API_KEY`). Add open-access PDFs (or honest abstract/page fallbacks) to your library.
 3. **Library** — your sources (imported papers or uploaded files).
 4. **Compare** — side-by-side structure across papers in your library.
 5. **Write paper** — Gemini-style split: topic + **2–3 Library reference papers** on the left; live **IEEE two-column** preview on the right with elaborated sections, citations, and **original SVG figures** (not scraped from PDFs). With **OpenAI or Ollama**, multi-pass drafting targets **~10+ IEEE two-column pages**; extractive/offline mode stays a short skeleton. AI drafts need human review — not a guarantee of conference acceptance. Without sources, exploratory outlines use `[Source needed]`.

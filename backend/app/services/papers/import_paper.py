@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 
 from ...config import get_settings
 from ...models.documents import Document
 from ...models.papers import PaperHit, PaperImportRequest
+from ...services.ingestion.loaders import _strip_html
 from ...services.store.document_store import slugify
 from ...services.store.knowledge_base import KnowledgeBase
 from .pdf_resolve import official_paper_url, pdf_candidates
@@ -27,6 +29,14 @@ ABSTRACT_FALLBACK_WARNING = (
     "Abstract saved. Use Open paper for the official copy."
 )
 
+WEB_PAGE_WARNING = (
+    "No open PDF found. Indexed publicly fetched page text only — not a full paper PDF."
+)
+
+WEB_UNAVAILABLE = (
+    "Could not import: no open PDF and page content was not fetchable. Use Open paper."
+)
+
 
 @dataclass
 class PaperImportResult:
@@ -44,7 +54,7 @@ def import_paper(
     get_json: JsonGetter | None = None,
     get_bytes: BytesGetter | None = None,
 ) -> PaperImportResult:
-    """Return a result whose ingested kind is pdf or abstract."""
+    """Return a result whose ingested kind is pdf, abstract, or web."""
 
     get_json = get_json or default_get_json
     get_bytes = get_bytes or default_get_bytes
@@ -92,6 +102,37 @@ def import_paper(
         last_error = "response was not a PDF"
         logger.warning("Downloaded file was not a PDF for %s (%s)", hit.paper_id, url)
 
+    is_web = (hit.result_kind == "web") or (hit.source == "tavily")
+    if is_web:
+        page_url = hit.url or hit.paper_id
+        page_text = _fetch_public_page_text(
+            page_url,
+            get_bytes=get_bytes,
+            timeout=settings.paper_search_timeout_s,
+            max_bytes=min(settings.paper_pdf_max_bytes, 2_000_000),
+        )
+        if page_text and len(page_text.strip()) >= 80:
+            warnings.append(WEB_PAGE_WARNING)
+            markdown = _web_markdown(hit, page_text)
+            document, _chunks = kb.ingest_bytes(
+                f"{slug}.md",
+                markdown.encode("utf-8"),
+                source=hit.source,
+                title=hit.title,
+                authors=hit.authors,
+                year=hit.year,
+                venue=hit.venue,
+                doi=hit.doi,
+            )
+            return PaperImportResult(
+                document=document,
+                ingested="web",
+                warnings=warnings,
+                paper_url=paper_url or page_url,
+                pdf_url=None,
+            )
+        raise ValueError(WEB_UNAVAILABLE)
+
     if last_error:
         warnings.append(ABSTRACT_FALLBACK_WARNING)
 
@@ -115,11 +156,55 @@ def import_paper(
     )
 
 
+def _fetch_public_page_text(
+    url: str | None,
+    *,
+    get_bytes: BytesGetter,
+    timeout: float,
+    max_bytes: int,
+) -> str | None:
+    if not url or not url.startswith(("http://", "https://")):
+        return None
+    try:
+        data, content_type = get_bytes(url, timeout=timeout, max_bytes=max_bytes)
+    except Exception as exc:
+        logger.warning("Web page fetch failed for %s: %s", url, exc)
+        return None
+    if data[:5] == b"%PDF-":
+        return None
+    ctype = (content_type or "").lower()
+    if "pdf" in ctype:
+        return None
+    text = data.decode("utf-8", errors="replace")
+    if "html" in ctype or "<html" in text[:500].lower() or "<body" in text[:800].lower():
+        text = _strip_html(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text or None
+
+
+def _web_markdown(hit: PaperHit, page_text: str) -> str:
+    url = hit.url or hit.paper_id
+    body = page_text.strip()
+    if len(body) > 50_000:
+        body = body[:50_000] + "…"
+    snippet = (hit.summary or hit.abstract or "").strip()
+    parts = [
+        f"# {hit.title}",
+        "",
+        f"Source URL: {url}",
+        "",
+    ]
+    if snippet:
+        parts.extend(["## Search snippet", "", snippet, ""])
+    parts.extend(["## Page text", "", body, ""])
+    return "\n".join(parts)
+
+
 def _abstract_markdown(hit: PaperHit) -> str:
     authors = ", ".join(hit.authors) if hit.authors else "Unknown"
     year = hit.year or "n.d."
     doi_line = f"DOI: {hit.doi}\n\n" if hit.doi else ""
-    abstract = (hit.abstract or "").strip() or "No abstract was provided by the index."
+    abstract = (hit.abstract or hit.summary or "").strip() or "No abstract was provided by the index."
     return (
         f"# {hit.title}\n\n"
         f"{authors} ({year})"

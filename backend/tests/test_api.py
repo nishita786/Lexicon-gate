@@ -256,21 +256,24 @@ def test_papers_search_endpoint(client: TestClient, monkeypatch):
                 )
             ],
             "semantic_scholar",
+            ["semantic_scholar"],
+            [],
         )
 
-    monkeypatch.setattr("app.api.routes.search_papers", fake_search)
-    response = client.get("/api/papers/search", params={"q": "dropout"})
+    monkeypatch.setattr("app.services.papers.search.search_papers_detailed", fake_search)
+    response = client.get("/api/papers/search", params={"q": "dropout", "filter": "academic"})
     assert response.status_code == 200
     body = response.json()
     assert body["provider"] == "semantic_scholar"
+    assert body["filter"] == "academic"
     assert body["papers"][0]["title"] == "Dropout"
 
 
 def test_papers_search_does_not_500_when_indexes_fail(client: TestClient, monkeypatch):
     def fake_search(query, limit=10, **kwargs):
-        return [], "crossref"
+        return [], "crossref", [], []
 
-    monkeypatch.setattr("app.api.routes.search_papers", fake_search)
+    monkeypatch.setattr("app.services.papers.search.search_papers_detailed", fake_search)
     response = client.get("/api/papers/search", params={"q": "deep learning"})
     assert response.status_code == 200
     assert response.json()["papers"] == []

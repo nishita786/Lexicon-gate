@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from app.services.ingestion.loaders import LoadedPage
 from app.services.llm.extractive_engine import compose_answer, declarative_stem
 from app.text_utils import (
@@ -124,3 +126,69 @@ def test_extractive_provider_empty_compose_is_not_json():
     assert response.structured["answer"] == ""
     assert response.text == ""
     assert "{" not in response.text
+
+
+MATH_CONCEPTS_TEXT = (
+    "Linear algebra is central to deep learning: vectors and matrices represent "
+    "activations and weights, and matrix multiplication implements linear layers. "
+    "Calculus supplies gradients via partial derivatives and the chain rule so "
+    "backpropagation can update parameters. Optimization methods such as gradient "
+    "descent minimise a loss function during neural network training."
+)
+
+TRAINING_ROLE_TEXT = (
+    "Gradient-based optimization supports neural network training by repeatedly "
+    "adjusting weights in the direction that reduces the training loss."
+)
+
+INTRO_ONLY_TEXT = (
+    "Deep neural networks have achieved remarkable results across vision and language. "
+    "This paper surveys recent architectures."
+)
+
+
+def test_compose_multi_aspect_emits_sections_and_citations():
+    query = (
+        "Explain the main mathematical concepts used in deep learning "
+        "and how they support neural network training."
+    )
+    evidence = [
+        {
+            "citation_id": 1,
+            "text": MATH_CONCEPTS_TEXT,
+            "fused_score": 0.9,
+            "relevance_score": 0.9,
+            "chunk_id": "c1",
+            "document_name": "math.md",
+        },
+        {
+            "citation_id": 2,
+            "text": TRAINING_ROLE_TEXT,
+            "fused_score": 0.85,
+            "relevance_score": 0.85,
+            "chunk_id": "c2",
+            "document_name": "train.md",
+        },
+    ]
+    result = compose_answer(query, evidence, question_type="explanatory")
+    answer = result["answer"]
+    assert re.search(r"\[\d+\]", answer)
+    lowered = answer.lower()
+    assert "1." in answer or "linear" in lowered or "gradient" in lowered
+    assert "matrix" in lowered or "gradient" in lowered or "loss" in lowered
+
+
+def test_uncovered_aspects_when_answer_misses_second_clause():
+    from app.text_utils import uncovered_aspects
+
+    query = (
+        "Explain the main mathematical concepts used in deep learning "
+        "and how they support neural network training."
+    )
+    thin = "Deep neural networks have achieved remarkable results across vision."
+    gaps = uncovered_aspects(query, thin)
+    assert gaps
+    assert any("mathematical" in g.lower() or "train" in g.lower() for g in gaps)
+
+    off_topic = "Saturn is a gas giant with prominent rings."
+    assert uncovered_aspects(query, off_topic)

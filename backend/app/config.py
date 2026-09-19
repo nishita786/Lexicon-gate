@@ -151,6 +151,7 @@ class Settings(BaseSettings):
 
     # ---------------------------------------------------------- paper search
     semantic_scholar_api_key: str | None = None
+    tavily_api_key: str | None = None
     paper_search_timeout_s: float = 20.0
     paper_pdf_max_bytes: int = 15_000_000
     unpaywall_email: str = "selfrag@localhost"

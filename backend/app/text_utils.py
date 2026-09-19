@@ -29,6 +29,16 @@ what's whats does doe using used use may might shall will can't
 """.split()
 )
 
+# Sentence-initial / connective words that look like proper nouns under _PROPER_RE.
+DISCOURSE_MARKERS: frozenset[str] = frozenset(
+    """
+according additionally alternatively consequently conversely finally firstly
+furthermore hence however indeed instead lastly likewise meanwhile moreover namely
+next nonetheless notably overall particularly previously similarly specifically
+still subsequently therefore thus typically ultimately yes context contrast
+""".split()
+)
+
 NEGATION_TOKENS: frozenset[str] = frozenset(
     """
 no not never none neither nor cannot can't cant don't dont doesn't doesnt
@@ -134,6 +144,10 @@ _CLAUSE_CUT_RE = re.compile(
     r"\s+(?:how|and how|and what|and why|;|\?)\s+",
     re.I,
 )
+_EXPLAIN_AND_RE = re.compile(
+    r"^(?P<head>(?:please\s+)?(?:explain|describe|discuss|outline)\b.+?)\s+and\s+(?P<tail>.+)$",
+    re.I,
+)
 _GENERIC_EXTRA_STEMS: frozenset[str] = frozenset(
     """
     approach method model using used combined automatic fully section goal
@@ -172,6 +186,107 @@ def remainder_question_clause(text: str) -> str:
     stripped = normalise_query_text(text).rstrip("?").strip()
     parts = _CLAUSE_CUT_RE.split(stripped, maxsplit=1)
     return parts[1].strip() if len(parts) > 1 else ""
+
+
+def question_aspects(query: str, *, max_aspects: int = 4) -> list[str]:
+    """Split a user question into ordered aspects / subquestions.
+
+    Uses clause cuts (``and how`` / ``and what`` / ``;`` / ``?``) and a light
+    ``explain … and …`` split. Falls back to the full query when no split applies.
+    Does not inject a fixed curriculum of concepts.
+    """
+
+    stripped = normalise_query_text(query).rstrip("?").strip()
+    if not stripped:
+        return []
+
+    aspects: list[str] = []
+    remaining = stripped
+    while remaining and len(aspects) < max_aspects:
+        parts = _CLAUSE_CUT_RE.split(remaining, maxsplit=1)
+        head = parts[0].strip()
+        if head:
+            aspects.append(head)
+        if len(parts) < 2:
+            break
+        remaining = parts[1].strip()
+        if len(aspects) >= max_aspects and remaining:
+            break
+
+    if len(aspects) <= 1:
+        match = _EXPLAIN_AND_RE.match(stripped)
+        if match:
+            head = match.group("head").strip()
+            tail = match.group("tail").strip()
+            if head and tail and len(content_tokens(tail)) >= 2:
+                aspects = [head, tail]
+
+    # Drop tiny fragments; keep unique order.
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for aspect in aspects:
+        key = aspect.lower()
+        if key in seen or len(content_tokens(aspect)) < 2:
+            continue
+        seen.add(key)
+        cleaned.append(aspect)
+        if len(cleaned) >= max_aspects:
+            break
+
+    return cleaned or [stripped]
+
+
+def aspect_is_covered(aspect: str, answer_text: str, *, min_overlap: float = 0.4) -> bool:
+    """True when answer content stems overlap the aspect enough to count as addressed."""
+
+    aspect_stems = stem_set(aspect)
+    if not aspect_stems:
+        return True
+    # Drop ultra-generic stems so "explain" alone does not count as covered.
+    generic = {
+        "explain",
+        "describe",
+        "discuss",
+        "outline",
+        "main",
+        "concept",
+        "concepts",
+        "used",
+        "use",
+        "using",
+        "support",
+        "supports",
+        "supporting",
+        "please",
+        "they",
+        "them",
+        "their",
+    }
+    focus = {s for s in aspect_stems if s not in generic and len(s) >= 3}
+    if len(focus) < 2:
+        focus = {s for s in aspect_stems if len(s) >= 3} or aspect_stems
+    answer_stems = stem_set(answer_text)
+    if not answer_stems:
+        return False
+    shared = focus & answer_stems
+    if len(focus) >= 3 and len(shared) < 2:
+        return False
+    # Prefer that longer topical stems are present (e.g. train, mathemat).
+    distinctive = {s for s in focus if len(s) >= 5}
+    if len(distinctive) >= 2:
+        dist_hit = len(distinctive & answer_stems) / len(distinctive)
+        if dist_hit < 0.45:
+            return False
+    return (len(shared) / len(focus)) >= min_overlap
+
+
+def uncovered_aspects(query: str, answer_text: str) -> list[str]:
+    """Return aspect phrases from the query that the answer does not address."""
+
+    aspects = question_aspects(query)
+    if len(aspects) <= 1:
+        return []
+    return [aspect for aspect in aspects if not aspect_is_covered(aspect, answer_text)]
 
 
 def definition_subject(query: str) -> str:
@@ -324,26 +439,90 @@ def split_sentences(text: str, min_chars: int = 25) -> list[str]:
 
 
 def extract_entities(text: str) -> list[str]:
-    """Heuristic entity extraction: acronyms, proper nouns and hyphenated terms."""
+    """Heuristic entity extraction: acronyms, proper nouns and hyphenated terms.
+
+    Discourse connectives and sentence-initial attribution leads (e.g. ``According``)
+    are excluded so they are not treated as named entities.
+    """
 
     found: list[str] = []
     seen: set[str] = set()
-    for match in _ACRONYM_RE.findall(text or ""):
+    raw = text or ""
+    acronyms = {m.lower() for m in _ACRONYM_RE.findall(raw)}
+
+    for match in _ACRONYM_RE.findall(raw):
         key = match.lower()
-        if key not in seen and key not in STOPWORDS:
-            seen.add(key)
-            found.append(match)
-    for match in _PROPER_RE.findall(text or ""):
-        key = match.lower()
-        if key in seen or key in STOPWORDS:
+        if key in seen or key in STOPWORDS or key in DISCOURSE_MARKERS:
             continue
         seen.add(key)
         found.append(match)
-    for match in re.findall(r"\b[a-z]+-[a-z]+(?:-[a-z]+)?\b", (text or "").lower()):
-        if match not in seen:
-            seen.add(match)
-            found.append(match)
+
+    for match in _PROPER_RE.finditer(raw):
+        token = match.group(0)
+        key = token.lower()
+        if key in seen or key in STOPWORDS or key in DISCOURSE_MARKERS:
+            continue
+        is_multi = " " in token
+        # Skip sentence-initial singles that look like connectives/attribution,
+        # not real paper entities (keeps mid-sentence "Dropout", "Transformer").
+        if (
+            not is_multi
+            and key not in acronyms
+            and _is_sentence_initial(raw, match.start())
+            and _looks_like_discourse_lead(raw, match)
+        ):
+            continue
+        seen.add(key)
+        found.append(token)
+
+    for match in re.findall(r"\b[a-z]+-[a-z]+(?:-[a-z]+)?\b", raw.lower()):
+        if match in seen or match in STOPWORDS or match in DISCOURSE_MARKERS:
+            continue
+        seen.add(match)
+        found.append(match)
     return found
+
+
+def _is_sentence_initial(text: str, start: int) -> bool:
+    """True when ``start`` is the first non-space char of the text or of a sentence."""
+
+    if start <= 0:
+        return True
+    before = text[:start].rstrip()
+    if not before:
+        return True
+    return before[-1] in ".!?"
+
+
+def _looks_like_discourse_lead(text: str, match: re.Match[str]) -> bool:
+    """True for connective / attribution leads such as ``According to``."""
+
+    key = match.group(0).lower()
+    if key in DISCOURSE_MARKERS:
+        return True
+    after = text[match.end() : match.end() + 16].lower()
+    if after.startswith(" to ") or after.startswith(" to,") or after.startswith(" to\n"):
+        return True
+    return False
+
+
+def is_content_entity(entity: str) -> bool:
+    """True for acronyms, multi-token names, or hyphenated terms — not lone discourse words."""
+
+    text = (entity or "").strip()
+    if not text:
+        return False
+    key = text.lower()
+    if key in STOPWORDS or key in DISCOURSE_MARKERS:
+        return False
+    if "-" in text:
+        return True
+    if " " in text:
+        return True
+    if _ACRONYM_RE.fullmatch(text):
+        return True
+    # Retained single proper nouns still count as content (e.g. Dropout, Titan).
+    return bool(_PROPER_RE.fullmatch(text))
 
 
 def extract_numbers(text: str) -> list[str]:

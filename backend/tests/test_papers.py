@@ -63,17 +63,30 @@ def test_paper_from_openalex_and_inverted_abstract():
     assert abstract_from_inverted(row["abstract_inverted_index"]) == "We present dropout"
 
 
-def test_search_uses_semantic_scholar_when_hits_exist():
-    def get_json(url, params=None, headers=None, timeout=None):
-        assert "semanticscholar" in url
-        return {"data": [SS_HIT]}
+def test_search_uses_semantic_scholar_when_hits_exist(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.papers.arxiv_search.search_arxiv",
+        lambda *a, **k: [],
+    )
 
-    hits, provider = search_papers("dropout", get_json=get_json)
-    assert provider == "semantic_scholar"
+    def get_json(url, params=None, headers=None, timeout=None):
+        if "semanticscholar" in url:
+            return {"data": [SS_HIT]}
+        if "openalex" in url:
+            return {"results": []}
+        raise AssertionError(url)
+
+    hits, provider = search_papers("dropout", get_json=get_json, search_filter="academic")
+    assert "semantic_scholar" in provider
     assert hits[0].paper_id == "abc123"
 
 
-def test_search_falls_back_to_openalex_when_ss_empty():
+def test_search_falls_back_to_openalex_when_ss_empty(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.papers.arxiv_search.search_arxiv",
+        lambda *a, **k: [],
+    )
+
     def get_json(url, params=None, headers=None, timeout=None):
         if "semanticscholar" in url:
             return {"data": []}
@@ -88,23 +101,27 @@ def test_search_falls_back_to_openalex_when_ss_empty():
             ]
         }
 
-    hits, provider = search_papers("dropout", get_json=get_json)
-    assert provider == "openalex"
+    hits, provider = search_papers("dropout", get_json=get_json, search_filter="academic")
+    assert "openalex" in provider
     assert hits[0].title == "OpenAlex Dropout"
 
 
-def test_search_falls_back_when_ss_errors():
+def test_search_falls_back_when_ss_errors(monkeypatch):
+    monkeypatch.setattr("app.services.papers.arxiv_search.search_arxiv", lambda *a, **k: [])
+
     def get_json(url, params=None, headers=None, timeout=None):
         if "semanticscholar" in url:
             raise RuntimeError("429")
         return {"results": [{"id": "W1", "display_name": "Fallback paper"}]}
 
-    hits, provider = search_papers("dropout", get_json=get_json)
-    assert provider == "openalex"
+    hits, provider = search_papers("dropout", get_json=get_json, search_filter="academic")
+    assert "openalex" in provider
     assert hits[0].title == "Fallback paper"
 
 
-def test_search_falls_back_to_crossref_when_ss_and_openalex_fail():
+def test_search_falls_back_to_crossref_when_ss_and_openalex_fail(monkeypatch):
+    monkeypatch.setattr("app.services.papers.arxiv_search.search_arxiv", lambda *a, **k: [])
+
     def get_json(url, params=None, headers=None, timeout=None):
         if "semanticscholar" in url or "openalex" in url:
             raise RuntimeError("429")
@@ -124,20 +141,25 @@ def test_search_falls_back_to_crossref_when_ss_and_openalex_fail():
             }
         }
 
-    hits, provider = search_papers("deep learning", get_json=get_json)
+    hits, provider = search_papers("deep learning", get_json=get_json, search_filter="academic")
     assert provider == "crossref"
     assert hits[0].title == "Deep Learning"
     assert hits[0].authors[0] == "Yoshua Bengio"
     assert hits[0].year == 2015
 
 
-def test_search_all_providers_fail_returns_empty():
+def test_search_all_providers_fail_returns_empty(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.papers.arxiv_search.search_arxiv",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("arxiv down")),
+    )
+
     def get_json(url, params=None, headers=None, timeout=None):
         raise RuntimeError("429 Too Many Requests")
 
-    hits, provider = search_papers("deep learning", get_json=get_json)
+    hits, provider = search_papers("deep learning", get_json=get_json, search_filter="academic")
     assert hits == []
-    assert provider in {"semantic_scholar", "openalex", "crossref"}
+    assert provider in {"none", "semantic_scholar", "openalex", "crossref", "arxiv"}
 
 
 def test_paper_from_crossref():
@@ -333,3 +355,97 @@ def test_import_all_candidates_fail_stays_abstract(kb):
     assert ABSTRACT_FALLBACK_WARNING in result.warnings
     assert result.pdf_url is None
     assert result.paper_url == "https://doi.org/10.1/closed"
+
+
+def test_arxiv_atom_parse_sets_pdf_url():
+    from app.services.papers.arxiv_search import parse_arxiv_atom
+
+    xml = """<?xml version="1.0" encoding="UTF-8"?>
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <entry>
+        <id>http://arxiv.org/abs/1706.03762v1</id>
+        <title>Attention Is All You Need</title>
+        <summary>We propose a new simple network architecture.</summary>
+        <published>2017-06-12T00:00:00Z</published>
+        <author><name>Ashish Vaswani</name></author>
+      </entry>
+    </feed>
+    """
+    hits = parse_arxiv_atom(xml)
+    assert len(hits) == 1
+    assert hits[0].source == "arxiv"
+    assert hits[0].pdf_url == "https://arxiv.org/pdf/1706.03762v1.pdf"
+    assert hits[0].full_text_available is True
+
+
+def test_tavily_mapper_web_hit():
+    from app.services.papers.tavily_search import paper_from_tavily
+
+    hit = paper_from_tavily(
+        {
+            "title": "Self-RAG blog",
+            "url": "https://example.edu/self-rag",
+            "content": "A summary of retrieval-augmented generation.",
+        }
+    )
+    assert hit is not None
+    assert hit.source == "tavily"
+    assert hit.result_kind == "web"
+    assert hit.summary and "retrieval" in hit.summary
+
+
+def test_merge_dedupe_by_doi():
+    from app.services.papers.search import merge_dedupe_hits
+
+    a = PaperHit(
+        paper_id="1",
+        title="Same Paper",
+        doi="10.1/x",
+        source="semantic_scholar",
+        pdf_url="https://a.pdf",
+        open_access=True,
+    )
+    b = PaperHit(
+        paper_id="2",
+        title="Same Paper Different Source",
+        doi="10.1/x",
+        source="openalex",
+    )
+    merged = merge_dedupe_hits([a, b], limit=10)
+    assert len(merged) == 1
+    assert merged[0].paper_id == "1"
+
+
+def test_open_access_filter_drops_closed(monkeypatch):
+    monkeypatch.setattr("app.services.papers.arxiv_search.search_arxiv", lambda *a, **k: [])
+
+    def get_json(url, params=None, headers=None, timeout=None):
+        if "semanticscholar" in url:
+            return {
+                "data": [
+                    {
+                        **SS_HIT,
+                        "openAccessPdf": {},
+                        "externalIds": {"DOI": "10.closed/1"},
+                    }
+                ]
+            }
+        return {"results": []}
+
+    hits, _provider = search_papers("dropout", get_json=get_json, search_filter="open_access")
+    # Without openAccessPdf / arxiv → closed, filtered out
+    assert all(h.open_access or h.pdf_url for h in hits)
+
+
+def test_pdf_candidates_prefer_arxiv_id():
+    from app.services.papers.pdf_resolve import pdf_candidates
+
+    hit = PaperHit(
+        paper_id="1706.03762",
+        title="Attention",
+        source="arxiv",
+        url="https://arxiv.org/abs/1706.03762",
+        open_access=True,
+    )
+    urls = pdf_candidates(hit, get_json=lambda *a, **k: {})
+    assert any("arxiv.org/pdf/1706.03762.pdf" in u for u in urls)

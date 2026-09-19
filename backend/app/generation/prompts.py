@@ -16,9 +16,8 @@ GROUNDED_SYSTEM = """You are a research assistant that answers ONLY from the pro
 
 Rules:
 - Every factual sentence must be grounded in a source and cite it as [n].
-- If the sources do not contain enough information, say so explicitly.
-  Use the exact sentence:
-  "I could not find sufficient evidence in the available sources to answer this reliably."
+- If the sources do not contain enough information, say so explicitly and refuse
+  to invent an answer that is not in those sources.
 - Do not fill gaps from your own knowledge.
 - If sources contradict each other, report both views with citations.
 - Do not invent page numbers, figures, or statistics.
@@ -43,14 +42,28 @@ def format_evidence(evidence: Sequence[EvidenceItem]) -> str:
 
 
 def answer_prompt(query: str, evidence: Sequence[EvidenceItem], analysis: QueryAnalysis | None = None) -> str:
+    from ..text_utils import question_aspects
+
+    aspects = question_aspects(query)
     extra = ""
     if analysis and analysis.is_multi_hop:
         extra = "\nThis question likely requires combining evidence from more than one source."
+    aspect_block = ""
+    if len(aspects) >= 2:
+        bullets = "\n".join(f"- {aspect}" for aspect in aspects)
+        aspect_block = (
+            "\nCover each of these aspects in an organized answer when the sources support it:\n"
+            f"{bullets}\n"
+            "If an aspect is not supported by the sources, say so explicitly under "
+            "'Not covered by the indexed sources' rather than inventing content.\n"
+        )
     return (
         f"Question: {query}\n"
-        f"{extra}\n\n"
+        f"{extra}"
+        f"{aspect_block}\n"
         f"Sources:\n{format_evidence(evidence)}\n\n"
-        "Write a concise, evidence-grounded answer with inline citations like [1]."
+        "Write a clear, evidence-grounded answer with inline citations like [1]. "
+        "Prefer explaining mechanisms and roles over copying a single introductory sentence."
     )
 
 
@@ -96,12 +109,16 @@ def conflict_prompt(
 
 
 INSUFFICIENT_ANSWER = (
-    "I could not find sufficient evidence in the available sources to answer this reliably."
+    "I searched your indexed sources. They do not contain enough support to answer "
+    "this question. I won't invent an answer that isn't grounded in those files. "
+    "Try asking about a term that appears in the paper, or add a source that defines it."
 )
 
 UNRELATED_ANSWER = (
-    "This question is not related to the indexed files. "
-    "The sources do not address it, so no answer is given."
+    "I searched your indexed sources. They do not contain enough support for this "
+    "question, so no answer is given. I won't invent an answer that isn't grounded "
+    "in those files. Try asking about a term that appears in the paper, or add a "
+    "source that defines it."
 )
 
 CONFLICT_PREFIX = (

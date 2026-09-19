@@ -29,13 +29,6 @@ const STATUS_COPY = {
   NO_RETRIEVAL_NEEDED: { label: "No documents needed", tone: "" },
 };
 
-const CLAIM_META = {
-  SUPPORTED: { label: "supported", tone: "neutral" },
-  PARTIALLY_SUPPORTED: { label: "insufficient evidence", tone: "warn" },
-  UNSUPPORTED: { label: "unsupported", tone: "warn" },
-  CONTRADICTED: { label: "contradicted", tone: "warn" },
-};
-
 export default function App() {
   const [session, setSession] = useState(undefined);
   const [page, setPage] = useState("ask");
@@ -621,7 +614,12 @@ function Events() {
 function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, history, onQueried, askScope, onClearScope }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [selectedDocIds, setSelectedDocIds] = useState([]);
   const emptyLibrary = docs.length === 0;
+
+  function toggleDoc(id) {
+    setSelectedDocIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
 
   async function ask(next = query) {
     const text = (next || "").trim();
@@ -630,10 +628,15 @@ function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, 
     setError("");
     setSelected(null);
     try {
+      const scopedIds = selectedDocIds.length
+        ? selectedDocIds
+        : askScope?.document_ids?.length
+          ? askScope.document_ids
+          : undefined;
       const payload = await api.query({
         query: text,
         include_trace: true,
-        document_ids: askScope?.document_ids?.length ? askScope.document_ids : undefined,
+        document_ids: scopedIds,
       });
       setResult(payload);
       await onQueried();
@@ -645,6 +648,9 @@ function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, 
   }
 
   const badge = result ? verificationBadge(result) : null;
+  const scopeLabel = selectedDocIds.length
+    ? `${selectedDocIds.length} selected source${selectedDocIds.length === 1 ? "" : "s"}`
+    : askScope?.label || "";
 
   return (
     <div className={`ask-workspace ${result ? "has-result" : ""}`}>
@@ -659,14 +665,48 @@ function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, 
           </div>
         )}
         <div className="card">
-          {askScope?.label && (
+          {scopeLabel && (
             <div className="theme-chip-row">
               <span className="theme-chip">
-                Asking in: {askScope.label}
-                <button type="button" className="theme-chip-clear" onClick={onClearScope} aria-label="Clear theme filter">
+                Asking in: {scopeLabel}
+                <button
+                  type="button"
+                  className="theme-chip-clear"
+                  onClick={() => {
+                    setSelectedDocIds([]);
+                    onClearScope?.();
+                  }}
+                  aria-label="Clear document filter"
+                >
                   ×
                 </button>
               </span>
+            </div>
+          )}
+          {!emptyLibrary && (
+            <div className="ask-doc-pick" style={{ marginBottom: 10 }}>
+              <div className="write-sources-head" style={{ marginBottom: 6 }}>
+                <strong>Sources for this question</strong>
+                <span className="status" style={{ margin: 0 }}>
+                  {selectedDocIds.length ? "Selected docs only" : "All library (or theme)"}
+                </span>
+              </div>
+              <div className="chips write-source-chips">
+                {docs.map((doc) => {
+                  const id = doc.document_id;
+                  const active = selectedDocIds.includes(id);
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      className={`chip${active ? " active" : ""}`}
+                      onClick={() => toggleDoc(id)}
+                    >
+                      {doc.title || doc.name}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           )}
           <textarea
@@ -736,24 +776,34 @@ function paperHref(paper) {
 }
 
 function FindPapers({ onImported, onRecentsChange, restore }) {
+  const FILTERS = [
+    { id: "all", label: "All" },
+    { id: "academic", label: "Academic Papers" },
+    { id: "research_web", label: "Research Websites" },
+    { id: "open_access", label: "Open Access" },
+  ];
   const [query, setQuery] = useState(restore?.query || "");
+  const [filter, setFilter] = useState(restore?.filter || "all");
   const [busy, setBusy] = useState(false);
   const [importing, setImporting] = useState(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [results, setResults] = useState(
     restore
-      ? { query: restore.query, provider: restore.provider, papers: restore.papers || [] }
+      ? { query: restore.query, provider: restore.provider, papers: restore.papers || [], notes: restore.notes || [] }
       : null
   );
 
   useEffect(() => {
     if (!restore?.id) return;
     setQuery(restore.query || "");
+    setFilter(restore.filter || "all");
     setResults({
       query: restore.query,
       provider: restore.provider,
       papers: restore.papers || [],
+      notes: restore.notes || [],
+      filter: restore.filter,
     });
     setError("");
     setMessage("");
@@ -767,11 +817,12 @@ function FindPapers({ onImported, onRecentsChange, restore }) {
     setError("");
     setMessage("");
     try {
-      const payload = await api.searchPapers(text);
+      const payload = await api.searchPapers(text, { filter });
       setResults(payload);
       await api.savePaperSearch({
         query: text,
         provider: payload.provider || "unknown",
+        filter,
         papers: (payload.papers || []).slice(0, 20).map((paper) => ({
           paper_id: paper.paper_id,
           title: paper.title,
@@ -783,12 +834,18 @@ function FindPapers({ onImported, onRecentsChange, restore }) {
           doi: paper.doi,
           venue: paper.venue,
           abstract: paper.abstract,
+          summary: paper.summary,
           open_access: paper.open_access,
           citation_count: paper.citation_count,
+          result_kind: paper.result_kind,
+          full_text_available: paper.full_text_available,
         })),
       });
       await onRecentsChange?.();
-      if (!payload.papers?.length) setMessage("No papers found. Try a more specific title or author.");
+      if (payload.notes?.length) setMessage(payload.notes.join(" "));
+      if (!payload.papers?.length) {
+        setMessage((prev) => prev || "No results. Try another filter or a more specific query.");
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -809,13 +866,17 @@ function FindPapers({ onImported, onRecentsChange, restore }) {
         year: paper.year,
         venue: paper.venue,
         abstract: paper.abstract,
+        summary: paper.summary,
         doi: paper.doi,
         pdf_url: paper.pdf_url,
         url: paper.url,
+        result_kind: paper.result_kind,
       });
       await onImported();
       if (result.ingested === "pdf") {
         setMessage(`Added “${paper.title}”. Full PDF indexed. Ask over it from Ask.`);
+      } else if (result.ingested === "web") {
+        setMessage(`Added “${paper.title}”. Page text indexed (no open PDF).`);
       } else {
         setMessage(
           `Added “${paper.title}”. Could not fetch a PDF (publisher blocked or paywalled). Abstract saved. Use Open paper for the official copy.`
@@ -829,62 +890,115 @@ function FindPapers({ onImported, onRecentsChange, restore }) {
     }
   }
 
+  function availabilityLabel(paper) {
+    if (paper.full_text_available || paper.pdf_url) return { text: "Full text", tone: "good" };
+    if (paper.result_kind === "web") return { text: "Web page", tone: "" };
+    return { text: "Abstract only", tone: "warn" };
+  }
+
+  function canAdd(paper) {
+    return Boolean(
+      paper.pdf_url ||
+        paper.full_text_available ||
+        paper.open_access ||
+        paper.abstract ||
+        paper.summary ||
+        paper.url
+    );
+  }
+
   return (
     <>
       <div className="page-title">
         <div>
           <h2>Find papers</h2>
-          <p>Search academic indexes. Rate limits are retried automatically. Add a paper to Library, then Ask.</p>
+          <p>
+            Search academic indexes and research websites. Prefer open-access PDFs when adding to Library, then Ask.
+          </p>
         </div>
       </div>
       <div className="spotlight spotlight-orange">
-        <p className="spotlight-kicker">Academic search</p>
-        <p>Drop a title, topic, or author. Add open copies into the library, then ask against your own sources.</p>
+        <p className="spotlight-kicker">Unified search</p>
+        <p>Filter by All, Academic Papers, Research Websites, or Open Access. Full PDFs are indexed when legally available.</p>
       </div>
       <form className="card" style={{ marginBottom: 16 }} onSubmit={search}>
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Paper title, topic, or author…"
+          placeholder="Paper title, topic, author, or research question…"
         />
+        <div className="chips find-filter-chips" style={{ marginTop: 10 }}>
+          {FILTERS.map((f) => (
+            <button
+              key={f.id}
+              type="button"
+              className={`chip${filter === f.id ? " active" : ""}`}
+              onClick={() => setFilter(f.id)}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
         <div className="row" style={{ marginTop: 10 }}>
           <button className={`primary${busy ? " is-busy" : ""}`} type="submit" disabled={busy || !query.trim()}>
             {busy ? "Searching…" : "Search"}
           </button>
-          {results?.provider && <span className="status">Results from {results.provider.replaceAll("_", " ")}</span>}
+          {results?.provider && (
+            <span className="status">
+              Results from {(results.providers_used || String(results.provider).split("+")).filter(Boolean).join(", ").replaceAll("_", " ") || results.provider}
+            </span>
+          )}
         </div>
       </form>
       {error && <p className="error">{error}</p>}
       {message && <p className="status">{message}</p>}
-      {(results?.papers || []).map((paper) => (
-        <div key={`${paper.source}-${paper.paper_id}`} className="card paper-row">
-          <div>
-            <strong>{paper.title}</strong>
-            <div className="status" style={{ margin: "4px 0 0" }}>
-              {(paper.authors || []).slice(0, 8).join(", ") || "Unknown author"}
-              {paper.year ? ` · ${paper.year}` : ""}
-              {paper.venue ? ` · ${paper.venue}` : ""}
-              {paper.citation_count != null ? ` · cited ${paper.citation_count}` : ""}
+      {(results?.papers || []).map((paper) => {
+        const avail = availabilityLabel(paper);
+        const blurb = paper.summary || paper.abstract || "";
+        return (
+          <div key={`${paper.source}-${paper.paper_id}`} className="card paper-row">
+            <div>
+              <strong>{paper.title}</strong>
+              <div className="status" style={{ margin: "4px 0 0" }}>
+                <span className="paper-source-badge">{(paper.source || "").replaceAll("_", " ")}</span>
+                {(paper.authors || []).slice(0, 8).join(", ") || (paper.result_kind === "web" ? "Web result" : "Unknown author")}
+                {paper.year ? ` · ${paper.year}` : ""}
+                {paper.venue ? ` · ${paper.venue}` : ""}
+                {paper.citation_count ? ` · cited ${paper.citation_count}` : ""}
+              </div>
+              {paper.url && (
+                <div className="status" style={{ margin: "2px 0 0", wordBreak: "break-all" }}>
+                  {paper.url}
+                </div>
+              )}
+              <div className="paper-flags" style={{ marginTop: 8 }}>
+                {paper.open_access && <span className="flag good">Open access</span>}
+                <span className={`flag ${avail.tone}`.trim()}>{avail.text}</span>
+              </div>
+              {blurb && (
+                <p className="cite-snippet">
+                  {blurb.slice(0, 360)}
+                  {blurb.length > 360 ? "…" : ""}
+                </p>
+              )}
             </div>
-            {paper.open_access && <span className="flag good" style={{ marginTop: 8 }}>Open access</span>}
-            {paper.abstract && <p className="cite-snippet">{paper.abstract.slice(0, 360)}{paper.abstract.length > 360 ? "…" : ""}</p>}
+            <div className="paper-actions">
+              {paperHref(paper) && (
+                <a className="ghost" href={paperHref(paper)} target="_blank" rel="noreferrer">
+                  Open paper
+                </a>
+              )}
+              <button
+                className="primary"
+                disabled={importing === paper.paper_id || !canAdd(paper)}
+                onClick={() => addPaper(paper)}
+              >
+                {importing === paper.paper_id ? "Adding…" : "Add to library"}
+              </button>
+            </div>
           </div>
-          <div className="paper-actions">
-            {paperHref(paper) && (
-              <a className="ghost" href={paperHref(paper)} target="_blank" rel="noreferrer">
-                Open paper
-              </a>
-            )}
-            <button
-              className="primary"
-              disabled={importing === paper.paper_id}
-              onClick={() => addPaper(paper)}
-            >
-              {importing === paper.paper_id ? "Adding…" : "Add to library"}
-            </button>
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </>
   );
 }
@@ -1061,6 +1175,11 @@ function ComparePapers({ docs }) {
   const [rows, setRows] = useState([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [extractBusy, setExtractBusy] = useState(false);
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [question, setQuestion] = useState("");
+  const [result, setResult] = useState(null);
+  const [selectedEvidence, setSelectedEvidence] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -1076,8 +1195,12 @@ function ComparePapers({ docs }) {
     load();
   }, [load, docs]);
 
+  function toggleSource(id) {
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
   async function refreshAll() {
-    setBusy(true);
+    setExtractBusy(true);
     setError("");
     try {
       const payload = await api.refreshExtractions();
@@ -1085,9 +1208,32 @@ function ComparePapers({ docs }) {
     } catch (err) {
       setError(err.message);
     } finally {
+      setExtractBusy(false);
+    }
+  }
+
+  async function runCompare() {
+    const text = question.trim();
+    if (!text || selectedIds.length < 2) return;
+    setBusy(true);
+    setError("");
+    setSelectedEvidence(null);
+    try {
+      const payload = await api.query({
+        query: text,
+        document_ids: selectedIds,
+        include_trace: true,
+      });
+      setResult(payload);
+    } catch (err) {
+      setError(err.message);
+    } finally {
       setBusy(false);
     }
   }
+
+  const badge = result ? verificationBadge(result) : null;
+  const canAsk = selectedIds.length >= 2 && question.trim() && !busy;
 
   return (
     <>
@@ -1095,11 +1241,11 @@ function ComparePapers({ docs }) {
         <div>
           <h2>Compare papers</h2>
           <p>
-            Structured fields extracted once when a paper is added. Low-confidence cells stay visible and are marked.
+            Side-by-side structure fields, plus a multi-paper question over sources you select.
           </p>
         </div>
-        <button className="ghost" type="button" disabled={busy || !docs.length} onClick={refreshAll}>
-          {busy ? "Extracting…" : "Re-extract library"}
+        <button className="ghost" type="button" disabled={extractBusy || !docs.length} onClick={refreshAll}>
+          {extractBusy ? "Extracting…" : "Re-extract library"}
         </button>
       </div>
       <div className="spotlight spotlight-magenta">
@@ -1110,59 +1256,285 @@ function ComparePapers({ docs }) {
       {!docs.length && (
         <div className="card">
           <h3>No sources yet</h3>
-          <p className="status">Add papers in Library or Find papers. Comparison uses stored records, not a question.</p>
+          <p className="status">Add papers in Library or Find papers, then compare structure or ask across two or more sources.</p>
         </div>
       )}
       {docs.length > 0 && (
-        <div className="card compare-wrap">
-          <table className="compare-papers">
-            <thead>
-              <tr>
-                <th>Paper</th>
-                {STRUCTURE_COLUMNS.map((col) => (
-                  <th key={col}>{col}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {docs.map((doc) => {
-                const record = rows.find((row) => row.document_id === doc.document_id);
-                return (
-                  <tr key={doc.document_id}>
-                    <td>
-                      <strong>{doc.title || doc.name}</strong>
-                      <div className="status" style={{ margin: 0 }}>
-                        {(doc.authors || []).slice(0, 4).join(", ") || "Unknown author"}
-                        {doc.year ? ` · ${doc.year}` : ""}
-                      </div>
-                    </td>
-                    {STRUCTURE_COLUMNS.map((col) => {
-                      const field = record?.fields?.[col];
-                      const value = (field?.value || "").trim();
-                      const missing = !value;
-                      const low = Boolean(value && field?.low_confidence);
-                      return (
-                        <td key={col} className={missing || low ? "field-low" : ""}>
-                          <span>{value || "—"}</span>
-                          {low && (
-                            <span className="flag warn low-flag" title="Extracted, but not clearly supported by this paper's passages">
-                              Low
-                            </span>
-                          )}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          <p className="status" style={{ marginBottom: 0 }}>
-            Empty cells mean that field was not found in the paper. A Low tag means a value was extracted but failed a support check — it is still shown.
-          </p>
-        </div>
+        <>
+          <div className="card compare-qa">
+            <h3>Ask across papers</h3>
+            <p className="status" style={{ marginTop: 0 }}>
+              Select at least two library papers, then ask about similarities, differences, methods, findings, or limitations.
+            </p>
+            <div className="write-sources">
+              <div className="write-sources-head">
+                <strong>Papers to compare</strong>
+                <span className="status" style={{ margin: 0 }}>
+                  {selectedIds.length ? `${selectedIds.length} selected` : "Select 2+"}
+                </span>
+              </div>
+              <div className="chips write-source-chips">
+                {docs.map((doc) => {
+                  const id = doc.document_id;
+                  const active = selectedIds.includes(id);
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      className={`chip${active ? " active" : ""}`}
+                      onClick={() => toggleSource(id)}
+                    >
+                      {doc.title || doc.name}
+                    </button>
+                  );
+                })}
+              </div>
+              {selectedIds.length > 0 && selectedIds.length < 2 && (
+                <p className="status">Select at least two papers to run a comparison question.</p>
+              )}
+            </div>
+            <label>
+              Comparison question
+              <textarea
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                placeholder="e.g. How do these papers differ in method and limitations?"
+                rows={3}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    if (canAsk) runCompare();
+                  }
+                }}
+              />
+            </label>
+            <div className="row" style={{ marginTop: 10 }}>
+              <button
+                className={`primary${busy ? " is-busy" : ""}`}
+                type="button"
+                disabled={!canAsk}
+                onClick={runCompare}
+              >
+                {busy ? "Comparing…" : "Compare"}
+              </button>
+              {badge && <span className={`flag ${badge.tone}`}>{badge.label}</span>}
+            </div>
+          </div>
+
+          {result && (
+            <CompareResultView
+              result={result}
+              selectedDocIds={selectedIds}
+              docs={docs}
+              selected={selectedEvidence}
+              onSelect={setSelectedEvidence}
+            />
+          )}
+
+          <div className="card compare-wrap">
+            <h3>Structure table</h3>
+            <table className="compare-papers">
+              <thead>
+                <tr>
+                  <th>Paper</th>
+                  {STRUCTURE_COLUMNS.map((col) => (
+                    <th key={col}>{col}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {docs.map((doc) => {
+                  const record = rows.find((row) => row.document_id === doc.document_id);
+                  return (
+                    <tr key={doc.document_id}>
+                      <td>
+                        <strong>{doc.title || doc.name}</strong>
+                        <div className="status" style={{ margin: 0 }}>
+                          {(doc.authors || []).slice(0, 4).join(", ") || "Unknown author"}
+                          {doc.year ? ` · ${doc.year}` : ""}
+                        </div>
+                      </td>
+                      {STRUCTURE_COLUMNS.map((col) => {
+                        const field = record?.fields?.[col];
+                        const value = (field?.value || "").trim();
+                        const missing = !value;
+                        const low = Boolean(value && field?.low_confidence);
+                        return (
+                          <td key={col} className={missing || low ? "field-low" : ""}>
+                            <span>{value || "—"}</span>
+                            {low && (
+                              <span className="flag warn low-flag" title="Extracted, but not clearly supported by this paper's passages">
+                                Low
+                              </span>
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <p className="status" style={{ marginBottom: 0 }}>
+              Empty cells mean that field was not found in the paper. A Low tag means a value was extracted but failed a support check — it is still shown.
+            </p>
+          </div>
+        </>
       )}
     </>
+  );
+}
+
+function claimPaperLabels(claim, evidenceByCite) {
+  const cites = claim.supporting_citations || [];
+  const names = [];
+  const seen = new Set();
+  for (const cite of cites) {
+    const item = evidenceByCite.get(cite);
+    if (!item) continue;
+    const label = item.title || item.document_name;
+    if (!label || seen.has(label)) continue;
+    seen.add(label);
+    names.push(label);
+  }
+  return names;
+}
+
+function CompareResultView({ result, selectedDocIds, docs, selected, onSelect }) {
+  const evidenceByCite = useMemo(() => {
+    const map = new Map();
+    for (const item of result.evidence || []) map.set(item.citation_id, item);
+    return map;
+  }, [result.evidence]);
+
+  const evidenceByPaper = useMemo(() => {
+    const groups = new Map();
+    for (const item of result.evidence || []) {
+      const key = item.document_id || item.document_name || "unknown";
+      if (!groups.has(key)) {
+        groups.set(key, {
+          key,
+          title: item.title || item.document_name || "Source",
+          items: [],
+        });
+      }
+      groups.get(key).items.push(item);
+    }
+    return [...groups.values()];
+  }, [result.evidence]);
+
+  const claims = result.claims || [];
+  const usedIds = new Set((result.evidence || []).map((item) => item.document_id).filter(Boolean));
+  const unusedSelected = docs.filter(
+    (d) => selectedDocIds.includes(d.document_id) && !usedIds.has(d.document_id),
+  );
+
+  function selectCite(id) {
+    const item = evidenceByCite.get(id);
+    if (item) onSelect(item);
+  }
+
+  return (
+    <div className="compare-result">
+      <div className="card">
+        <h3>Comparison answer</h3>
+        {result.unrelated_to_sources && (
+          <p className="status" style={{ marginTop: 0 }}>
+            This question is not covered by the selected papers.
+          </p>
+        )}
+        {!result.unrelated_to_sources &&
+          (result.status === "INSUFFICIENT_EVIDENCE" || looksLikeDumpedJson(result.answer)) && (
+            <p className="status" style={{ marginTop: 0 }}>
+              The selected papers do not contain enough support for a reliable comparison.
+            </p>
+          )}
+        <div className="answer">
+          {!looksLikeDumpedJson(result.answer) && (result.answer || "").trim() && (
+            <AnswerText text={result.answer} onCite={selectCite} />
+          )}
+        </div>
+        {(result.status === "INSUFFICIENT_EVIDENCE" || result.unrelated_to_sources) &&
+          result.mismatch_detail && (
+          <p className="status" style={{ marginTop: 8 }}>
+            {result.mismatch_detail}
+          </p>
+        )}
+      </div>
+
+      <div className="card">
+        <h3>Claims by paper</h3>
+        {!claims.length ? (
+          <p className="status">No claims were extracted for this answer.</p>
+        ) : (
+          <ul className="claim-list compare-claim-list">
+            {claims.map((claim) => {
+              const papers = claimPaperLabels(claim, evidenceByCite);
+              const tone =
+                claim.status === "SUPPORTED"
+                  ? "good"
+                  : claim.status === "PARTIALLY_SUPPORTED"
+                    ? "warn"
+                    : "bad";
+              return (
+                <li key={claim.claim_id}>
+                  <div className="compare-claim-head">
+                    <span className={`flag ${tone}`}>{claim.status.replace(/_/g, " ")}</span>
+                    {papers.length > 0 ? (
+                      <span className="status" style={{ margin: 0 }}>
+                        {papers.join(" · ")}
+                      </span>
+                    ) : (
+                      <span className="status" style={{ margin: 0 }}>
+                        No supporting paper cited
+                      </span>
+                    )}
+                  </div>
+                  <p className="compare-claim-text">{claim.text}</p>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+
+      <div className="card">
+        <h3>Evidence by paper</h3>
+        {!evidenceByPaper.length ? (
+          <p className="status">No passages were retrieved.</p>
+        ) : (
+          evidenceByPaper.map((group) => (
+            <div key={group.key} className="compare-evidence-group">
+              <h4>{group.title}</h4>
+              <div className="evidence-list">
+                {group.items.map((item) => (
+                  <EvidenceCard
+                    key={item.chunk_id}
+                    item={item}
+                    active={selected?.chunk_id === item.chunk_id}
+                    expanded={selected?.chunk_id === item.chunk_id}
+                    onSelect={() => onSelect(item)}
+                  />
+                ))}
+              </div>
+            </div>
+          ))
+        )}
+        {unusedSelected.length > 0 && (
+          <p className="status">
+            Not represented in retrieved evidence:{" "}
+            {unusedSelected.map((d) => d.title || d.name).join(", ")}
+          </p>
+        )}
+      </div>
+
+      {(result.hallucination?.flags || []).length > 0 && (
+        <div className="card">
+          <h3>Verification notes</h3>
+          <p className="error">{result.hallucination.flags.join(" · ")}</p>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1653,6 +2025,9 @@ function verificationBadge(result) {
   ) {
     return { label: "Unsupported", tone: "bad" };
   }
+  if ((result.uncovered_aspects || []).length > 0) {
+    return { label: "Partially supported", tone: "warn" };
+  }
   const claims = result.claims || [];
   if (!claims.length) {
     if (result.status === "CONFLICTING_EVIDENCE") {
@@ -1680,40 +2055,6 @@ function exportText(result) {
   return cites ? `${result.answer}\n\n${cites}` : result.answer || "";
 }
 
-function claimMeta(claim) {
-  const nli = String(claim?.nli_label || "").toLowerCase();
-  if (nli === "supported") return CLAIM_META.SUPPORTED;
-  if (nli === "contradicted") return CLAIM_META.CONTRADICTED;
-  if (nli === "unsupported") {
-    if (claim?.status === "PARTIALLY_SUPPORTED") return CLAIM_META.PARTIALLY_SUPPORTED;
-    return CLAIM_META.UNSUPPORTED;
-  }
-  return CLAIM_META[claim?.status] || CLAIM_META.UNSUPPORTED;
-}
-
-function claimConfidence(claim) {
-  if (claim?.nli_confidence != null && Number.isFinite(Number(claim.nli_confidence))) {
-    return Number(claim.nli_confidence);
-  }
-  if (claim?.support_score != null && Number.isFinite(Number(claim.support_score))) {
-    return Number(claim.support_score);
-  }
-  return null;
-}
-
-function sourceForClaim(claim, evidence) {
-  const items = evidence || [];
-  if (claim?.source_chunk_id) {
-    const hit = items.find((item) => item.chunk_id === claim.source_chunk_id);
-    if (hit) return hit;
-  }
-  const cite = claim?.supporting_citations?.[0] ?? claim?.contradicting_citations?.[0];
-  if (cite != null) {
-    return items.find((item) => item.citation_id === cite) || null;
-  }
-  return null;
-}
-
 function sourceHoverLabel(source, span) {
   if (!source) return "No source chunk tied to this claim";
   const heading = `[${source.citation_id}] ${source.title || source.document_name}`;
@@ -1725,23 +2066,6 @@ function sourceHoverLabel(source, span) {
 function looksLikeDumpedJson(text) {
   const trimmed = String(text || "").trim();
   return trimmed.startsWith("{") && trimmed.includes('"answer"');
-}
-
-function visibleClaims(result) {
-  return (result.claims || []).filter((claim) => !looksLikeDumpedJson(claim.text));
-}
-
-function shouldHideClaims(result) {
-  const claims = visibleClaims(result);
-  if (!claims.length) return true;
-  if (looksLikeDumpedJson(result.answer)) return true;
-  if (
-    result.status === "INSUFFICIENT_EVIDENCE" &&
-    claims.every((claim) => looksLikeDumpedJson(claim.text))
-  ) {
-    return true;
-  }
-  return false;
 }
 
 function ClaimCard({
@@ -1857,35 +2181,19 @@ function AnswerView({ result, docs, selected, onSelect }) {
               The indexed files do not contain enough support for a reliable answer.
             </p>
           )}
-          {(result.claims || []).length > 0 && !shouldHideClaims(result) ? (
-            <ul className="claim-list answer-claims">
-              {visibleClaims(result).map((claim) => {
-                const meta = claimMeta(claim);
-                return (
-                  <li key={claim.claim_id}>
-                    <ClaimCard
-                      text={claim.text}
-                      label={meta.label}
-                      tone={meta.tone}
-                      confidence={claimConfidence(claim)}
-                      source={sourceForClaim(claim, result.evidence)}
-                      span={claim.best_evidence_span}
-                      onSelectSource={(item) => item && onSelect(item)}
-                      onCite={selectCite}
-                    />
-                  </li>
-                );
-              })}
-            </ul>
-          ) : (
-            <div className="answer">
-              {!looksLikeDumpedJson(result.answer) && (
-                <AnswerText
-                  text={result.answer}
-                  onCite={selectCite}
-                />
-              )}
-            </div>
+          <div className="answer">
+            {!looksLikeDumpedJson(result.answer) && (result.answer || "").trim() && (
+              <AnswerText
+                text={result.answer}
+                onCite={selectCite}
+              />
+            )}
+          </div>
+          {(result.status === "INSUFFICIENT_EVIDENCE" || result.unrelated_to_sources) &&
+            result.mismatch_detail && (
+            <p className="status" style={{ marginTop: 8 }}>
+              {result.mismatch_detail}
+            </p>
           )}
           <div className="export-bar">
             <button type="button" className="ghost" onClick={copyAnswer}>

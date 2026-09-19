@@ -18,6 +18,7 @@ from ..text_utils import (
     is_concept_definition_query,
     normalise_query_text,
     normalise_whitespace,
+    question_aspects,
 )
 
 # Questions that need no corpus lookup: greetings, meta-questions, arithmetic.
@@ -40,7 +41,10 @@ _AMBIGUOUS_MARKERS = (
 )
 
 _QUESTION_TYPES = (
-    ("definition", (r"^what (?:is|are|does .* mean)", r"\bdefine\b", r"\bmeaning of\b")),
+    # Prefer concept definitions only via is_concept_definition_query above;
+    # keep explicit define/meaning cues here, not bare "what is the …".
+    ("definition", (r"\bdefine\b", r"\bmeaning of\b", r"^what (?:does|do)\b.*\bmean\b")),
+    ("explanatory", (r"^(?:please\s+)?(?:explain|describe|discuss|outline)\b", r"\bexplain\b")),
     ("causal", (r"^why\b", r"\bcause", r"\bbecause\b", r"\bleads? to\b", r"\breason\b")),
     ("procedural", (r"^how (?:do|does|to|can)\b", r"\bsteps?\b", r"\bprocedure\b", r"\bprocess\b")),
     ("comparative", (r"\bcompare\b", r"\bversus\b", r"\bvs\b", r"\bdifference\b", r"\bbetter than\b")),
@@ -85,7 +89,8 @@ def analyse_query(
                 question_type = label
                 break
 
-    is_multi_hop = _detect_multi_hop(lowered)
+    aspects = question_aspects(normalised)
+    is_multi_hop = _detect_multi_hop(lowered) or len(aspects) >= 2
     is_ambiguous = _detect_ambiguity(normalised, lowered)
 
     entities = extract_entities(normalised)
@@ -95,6 +100,8 @@ def analyse_query(
     if is_multi_hop:
         suggested = min(max_top_k, initial_top_k + 3)
     if question_type == "enumerative":
+        suggested = min(max_top_k, suggested + 2)
+    if question_type == "explanatory" and len(aspects) >= 2:
         suggested = min(max_top_k, suggested + 2)
     if question_type == "definition" and not is_multi_hop:
         suggested = max(3, initial_top_k - 1)

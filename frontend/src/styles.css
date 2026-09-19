@@ -920,6 +920,29 @@ table {
 table.compare-papers { min-width: 1100px; }
 table.compare-papers th { text-transform: capitalize; }
 table.compare-papers td { vertical-align: top; max-width: 220px; }
+.compare-qa { margin-bottom: 16px; }
+.compare-qa label { display: block; margin-top: 12px; }
+.compare-qa textarea { width: 100%; margin-top: 6px; }
+.compare-result {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.compare-claim-list li { margin-bottom: 12px; }
+.compare-claim-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.compare-claim-text { margin: 0; }
+.compare-evidence-group { margin-bottom: 14px; }
+.compare-evidence-group h4 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
 .field-low { color: var(--ink-muted); }
 .low-flag {
   margin-left: 8px;
@@ -1128,6 +1151,26 @@ td.win { color: var(--success); }
   gap: 8px;
   flex-shrink: 0;
   align-items: stretch;
+}
+.paper-source-badge {
+  display: inline-block;
+  margin-right: 0.45rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 650;
+  text-transform: capitalize;
+  background: color-mix(in srgb, var(--ink, #1a1a1a) 8%, transparent);
+}
+.paper-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.find-filter-chips { flex-wrap: wrap; }
+.ask-doc-pick .chips {
+  max-height: 7.5rem;
+  overflow: auto;
 }
 a.ghost {
   display: inline-flex;

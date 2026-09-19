@@ -14,9 +14,22 @@ show a flag without collapsing everything into a boolean.
 
 from __future__ import annotations
 
+import re
+
 from ..models.query import Claim, ClaimStatus, EvidenceItem, HallucinationReport
 from ..services.llm.extractive_engine import strip_citations
-from ..text_utils import extract_entities, extract_numbers, stem_set
+from ..text_utils import extract_entities, extract_numbers, is_content_entity, stem_set
+
+_ATTRIBUTION_PREFIX_RE = re.compile(
+    r"^(?:according\s+to\s+(?:the\s+)?(?:retrieved\s+)?sources?,?\s*"
+    r"|based\s+on\s+(?:the\s+)?(?:retrieved\s+)?(?:evidence|sources?),?\s*"
+    r"|from\s+the\s+(?:retrieved\s+)?(?:evidence|sources?),?\s*"
+    r"|in\s+this\s+context,?\s*"
+    r"|in\s+contrast,?\s*"
+    r"|on\s+the\s+other\s+hand,?\s*"
+    r"|by\s+contrast,?\s*)",
+    re.I,
+)
 
 
 def detect_hallucinations(
@@ -45,14 +58,16 @@ def detect_hallucinations(
     evidence_numbers = set(extract_numbers(evidence_text))
     evidence_entities = {e.lower() for e in extract_entities(evidence_text)}
 
-    answer_clean = strip_citations(answer)
+    answer_clean = _strip_attribution_prefixes(strip_citations(answer))
     ungrounded_numbers = [
         n for n in extract_numbers(answer_clean) if n not in evidence_numbers
     ]
     ungrounded_entities = [
         e
         for e in extract_entities(answer_clean)
-        if e.lower() not in evidence_entities and e.lower() not in evidence_stems
+        if is_content_entity(e)
+        and e.lower() not in evidence_entities
+        and e.lower() not in evidence_stems
     ]
 
     if ungrounded_numbers:
@@ -87,6 +102,19 @@ def detect_hallucinations(
         flags=flags,
         severity=severity,
     )
+
+
+def _strip_attribution_prefixes(text: str) -> str:
+    """Remove boilerplate attribution leads before entity scanning."""
+
+    remaining = (text or "").strip()
+    # Strip repeatedly in case of multiple short clauses.
+    for _ in range(3):
+        updated = _ATTRIBUTION_PREFIX_RE.sub("", remaining, count=1).lstrip(" ,;—-")
+        if updated == remaining:
+            break
+        remaining = updated
+    return remaining
 
 
 def _severity(

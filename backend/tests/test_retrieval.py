@@ -57,6 +57,20 @@ def test_query_analysis_skips_greetings_and_flags_multihop():
     assert multi.is_multi_hop is True
 
 
+def test_explain_and_how_is_explanatory_multihop():
+    from app.text_utils import question_aspects
+
+    query = (
+        "Explain the main mathematical concepts used in deep learning "
+        "and how they support neural network training."
+    )
+    analysis = analyse_query(query)
+    aspects = question_aspects(query)
+    assert len(aspects) >= 2
+    assert analysis.is_multi_hop is True
+    assert analysis.question_type == "explanatory"
+
+
 def test_uncovered_terms_detect_gaps():
     missing = uncovered_query_terms(
         "How does dropout affect Titan's nitrogen atmosphere?",

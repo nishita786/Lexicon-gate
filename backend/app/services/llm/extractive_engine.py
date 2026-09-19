@@ -37,11 +37,13 @@ from ...text_utils import (
     definition_subject,
     first_question_clause,
     is_concept_definition_query,
+    is_definition_query,
     is_definitional_sentence,
     idf_weighted_containment,
     jaccard,
     normalise_query_text,
     off_topic_penalty,
+    question_aspects,
     remainder_question_clause,
     split_sentences,
     stem,
@@ -49,7 +51,7 @@ from ...text_utils import (
     truncate,
 )
 
-MAX_SUPPORTING_SENTENCES = 4
+MAX_SUPPORTING_SENTENCES = 6
 MIN_SENTENCE_SCORE = 0.06
 REDUNDANCY_PENALTY = 0.65
 
@@ -333,6 +335,8 @@ def compose_answer(
     include_lead: bool = True,
     max_sentences: int = MAX_SUPPORTING_SENTENCES,
     question_type: str = "",
+    *,
+    allow_multi_aspect: bool = True,
 ) -> dict[str, Any]:
     """Build a grounded draft answer with inline citation markers."""
 
@@ -345,6 +349,23 @@ def compose_answer(
         }
 
     query = normalise_query_text(query)
+    aspects = question_aspects(query)
+    if (
+        allow_multi_aspect
+        and len(aspects) >= 2
+        and question_type != "definition"
+    ):
+        return _compose_multi_aspect(
+            query,
+            aspects,
+            evidence,
+            focus_terms=focus_terms,
+            avoid_claims=avoid_claims,
+            include_lead=include_lead,
+            max_sentences=max_sentences,
+            question_type=question_type,
+        )
+
     extra = remainder_question_clause(query)
     merged_focus = [str(term) for term in focus_terms if term]
     if extra and extra not in merged_focus:
@@ -414,6 +435,112 @@ def compose_answer(
                 "score": round(s.score, 4),
             }
             for s in selected
+        ],
+        "lead": lead,
+    }
+
+
+def _compose_multi_aspect(
+    query: str,
+    aspects: list[str],
+    evidence: Sequence[dict[str, Any]],
+    *,
+    focus_terms: Iterable[str],
+    avoid_claims: Sequence[str],
+    include_lead: bool,
+    max_sentences: int,
+    question_type: str,
+) -> dict[str, Any]:
+    """Build a numbered, aspect-sectioned answer from shared evidence."""
+
+    corpus = [str(item.get("text", "")) for item in evidence]
+    idf = build_idf(corpus)
+    all_sentences = collect_sentences(evidence)
+    n = max(1, len(aspects))
+    per_aspect = max(2, max_sentences // n)
+    global_focus = [str(term) for term in focus_terms if term]
+    for aspect in aspects:
+        if aspect not in global_focus:
+            global_focus.append(aspect)
+
+    parts: list[str] = []
+    selected_all: list[EvidenceSentence] = []
+    used_citations: list[int] = []
+    used_texts: set[str] = set()
+    lead = ""
+
+    for index, aspect in enumerate(aspects, start=1):
+        focus = list(global_focus)
+        if aspect not in focus:
+            focus.append(aspect)
+        # Prefer mechanism / training role language for "how … support …" aspects.
+        lowered = aspect.lower()
+        if any(tok in lowered for tok in ("how", "support", "train", "role", "why")):
+            focus.extend(["gradient", "optimization", "training", "loss", "backpropagation"])
+
+        scored = score_sentences(
+            all_sentences,
+            aspect,
+            idf,
+            focus,
+            question_type=question_type,
+        )
+        # Soft-boost sentences not already used so sections diverge.
+        for item in scored:
+            if item.text.strip().lower() in used_texts:
+                item.score *= 0.35
+        picked = select_sentences(scored, limit=per_aspect, avoid=avoid_claims)
+        picked = [p for p in picked if p.text.strip().lower() not in used_texts][:per_aspect]
+        if not picked:
+            continue
+
+        section_bits: list[str] = []
+        if include_lead:
+            section_lead = synthesise_lead(aspect, picked[0], idf)
+            if section_lead:
+                section_bits.append(section_lead)
+                if not lead:
+                    lead = section_lead
+        for sentence in picked:
+            text = sentence.text.strip()
+            if not text.endswith((".", "!", "?")):
+                text += "."
+            section_bits.append(f"{text} [{sentence.citation_id}]")
+            used_texts.add(sentence.text.strip().lower())
+            selected_all.append(sentence)
+            if sentence.citation_id not in used_citations:
+                used_citations.append(sentence.citation_id)
+
+        if section_bits:
+            label = aspect[0].upper() + aspect[1:] if aspect else f"Aspect {index}"
+            if len(label) > 72:
+                label = label[:69].rsplit(" ", 1)[0] + "…"
+            parts.append(f"{index}. {label}: " + " ".join(section_bits))
+
+    if not parts:
+        # Fall back to single-pool compose without re-entering multi-aspect.
+        return compose_answer(
+            query,
+            evidence,
+            focus_terms=global_focus,
+            avoid_claims=avoid_claims,
+            include_lead=include_lead,
+            max_sentences=max_sentences,
+            question_type=question_type or "factual",
+            allow_multi_aspect=False,
+        )
+
+    return {
+        "answer": "\n\n".join(parts).strip(),
+        "citations": used_citations,
+        "selected": [
+            {
+                "text": s.text,
+                "citation_id": s.citation_id,
+                "chunk_id": s.chunk_id,
+                "score": round(s.score, 4),
+            }
+            for s in selected_all
         ],
         "lead": lead,
     }
@@ -505,21 +632,29 @@ def rewrite_queries(
     uncovered_terms: Sequence[str] = (),
     corpus_terms: Sequence[str] = (),
     limit: int = 3,
+    question_type: str = "",
 ) -> list[str]:
     """Produce alternative phrasings targeted at the weaknesses of the last run.
 
     Strategies, in order of priority:
 
-    1. **Term expansion** – add domain synonyms for the query intent.
-    2. **Gap targeting** – foreground query terms the evidence failed to cover.
-    3. **Keyword distillation** – drop question syntax, keep content words.
-    4. **Corpus anchoring** – pair the core entity with vocabulary that actually
+    1. **Definition subject** – for ``what is X`` questions, search ``X`` alone.
+    2. **Term expansion** – add domain synonyms for the query intent.
+    3. **Gap targeting** – foreground query terms the evidence failed to cover.
+    4. **Keyword distillation** – drop question syntax, keep content words.
+    5. **Corpus anchoring** – pair the core entity with vocabulary that actually
        occurs in the indexed corpus.
     """
 
     base_tokens = [tok for tok in content_tokens(query)]
     core = " ".join(dict.fromkeys(base_tokens))
     candidates: list[str] = []
+    prioritized: list[str] = []
+
+    if question_type == "definition" or is_definition_query(query):
+        subject = definition_subject(query)
+        if subject and subject.lower().strip() != query.lower().strip():
+            prioritized.append(subject)
 
     lowered = query.lower()
     for trigger, expansions in _INTENT_EXPANSIONS:
@@ -553,15 +688,35 @@ def rewrite_queries(
     candidates.append(core)
 
     seen: set[str] = {" ".join(sorted(base_tokens))}
+    seen_surface = {query.lower().strip()}
     out: list[str] = []
+    # Prefer the definition subject even when content tokens match the original
+    # (dropping "what is" still changes lexical retrieval).
+    for candidate in prioritized:
+        candidate = re.sub(r"\s+", " ", candidate).strip()
+        surface = candidate.lower()
+        if len(candidate) < 4 or surface in seen_surface:
+            continue
+        seen_surface.add(surface)
+        key = " ".join(sorted(content_tokens(candidate)))
+        if key:
+            seen.add(key)
+        out.append(candidate)
+        if len(out) >= limit:
+            return out
+
     for candidate in candidates:
         candidate = re.sub(r"\s+", " ", candidate).strip()
         if len(candidate) < 4:
+            continue
+        surface = candidate.lower()
+        if surface in seen_surface:
             continue
         key = " ".join(sorted(content_tokens(candidate)))
         if not key or key in seen:
             continue
         seen.add(key)
+        seen_surface.add(surface)
         out.append(candidate)
         if len(out) >= limit:
             break

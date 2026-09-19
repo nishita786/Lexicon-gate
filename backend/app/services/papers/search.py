@@ -1,11 +1,13 @@
-"""Semantic Scholar + OpenAlex paper search, with Crossref as a last resort.
+"""Semantic Scholar + OpenAlex + arXiv + Tavily paper/web search.
 
 Google Scholar is not queried. Hits are normalized to ``PaperHit``.
 """
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
+import re
 import threading
 import time
 from typing import Any, Callable
@@ -39,7 +41,7 @@ BytesGetter = Callable[..., tuple[bytes, str]]
 _host_lock = threading.Lock()
 _host_last: dict[str, float] = {}
 _cache_lock = threading.Lock()
-_search_cache: dict[tuple[str, int], tuple[float, list[PaperHit], str]] = {}
+_search_cache: dict[tuple[str, int, str], tuple[float, list[PaperHit], str]] = {}
 CACHE_TTL_S = 120.0
 
 
@@ -161,10 +163,11 @@ def search_papers(
     query: str,
     limit: int = 10,
     *,
+    search_filter: str = "all",
     get_json: JsonGetter | None = None,
     settings: Settings | None = None,
 ) -> tuple[list[PaperHit], str]:
-    """Return (hits, provider_used). Falls back when a provider is empty or errors."""
+    """Return (hits, provider_label). Merges providers by filter; Crossref is last resort."""
 
     query = (query or "").strip()
     if not query:
@@ -173,7 +176,10 @@ def search_papers(
     get_json = get_json or default_get_json
     settings = settings or get_settings()
     limit = max(1, min(int(limit), 25))
-    cache_key = (query.lower(), limit)
+    filt = (search_filter or "all").strip().lower()
+    if filt not in {"all", "academic", "research_web", "open_access"}:
+        filt = "all"
+    cache_key = (query.lower(), limit, filt)
     if not injected:
         now = time.monotonic()
         with _cache_lock:
@@ -181,38 +187,179 @@ def search_papers(
             if cached and now - cached[0] < CACHE_TTL_S:
                 return cached[1], cached[2]
 
-    providers: list[tuple[str, Callable[[], list[PaperHit]]]] = [
-        (
-            "semantic_scholar",
-            lambda: search_semantic_scholar(
-                query, limit, get_json=get_json, settings=settings
+    hits, provider = _search_with_filter(
+        query, limit, filt, get_json=get_json, settings=settings
+    )
+    if not injected and hits:
+        with _cache_lock:
+            _search_cache[cache_key] = (time.monotonic(), hits, provider)
+    return hits, provider
+
+
+def search_papers_detailed(
+    query: str,
+    limit: int = 10,
+    *,
+    search_filter: str = "all",
+    get_json: JsonGetter | None = None,
+    settings: Settings | None = None,
+) -> tuple[list[PaperHit], str, list[str], list[str]]:
+    """Like search_papers but also returns providers_used and notes."""
+
+    query = (query or "").strip()
+    if not query:
+        return [], "none", [], []
+    get_json = get_json or default_get_json
+    settings = settings or get_settings()
+    limit = max(1, min(int(limit), 25))
+    filt = (search_filter or "all").strip().lower()
+    if filt not in {"all", "academic", "research_web", "open_access"}:
+        filt = "all"
+    return _search_with_filter_detailed(
+        query, limit, filt, get_json=get_json, settings=settings
+    )
+
+
+def _search_with_filter(
+    query: str,
+    limit: int,
+    filt: str,
+    *,
+    get_json: JsonGetter,
+    settings: Settings,
+) -> tuple[list[PaperHit], str]:
+    hits, provider, _used, _notes = _search_with_filter_detailed(
+        query, limit, filt, get_json=get_json, settings=settings
+    )
+    return hits, provider
+
+
+def _search_with_filter_detailed(
+    query: str,
+    limit: int,
+    filt: str,
+    *,
+    get_json: JsonGetter,
+    settings: Settings,
+) -> tuple[list[PaperHit], str, list[str], list[str]]:
+    from .arxiv_search import search_arxiv
+    from .tavily_search import search_tavily, tavily_available
+
+    notes: list[str] = []
+    used: list[str] = []
+
+    def run_academic() -> list[PaperHit]:
+        nonlocal used
+        buckets: list[list[PaperHit]] = []
+        academic_jobs: list[tuple[str, Callable[[], list[PaperHit]]]] = [
+            (
+                "semantic_scholar",
+                lambda: search_semantic_scholar(
+                    query, limit, get_json=get_json, settings=settings
+                ),
             ),
-        ),
-        (
-            "openalex",
-            lambda: search_openalex(query, limit, get_json=get_json, settings=settings),
-        ),
-        (
-            "crossref",
-            lambda: search_crossref(query, limit, get_json=get_json, settings=settings),
-        ),
-    ]
+            (
+                "openalex",
+                lambda: search_openalex(query, limit, get_json=get_json, settings=settings),
+            ),
+            (
+                "arxiv",
+                lambda: search_arxiv(query, limit, settings=settings),
+            ),
+        ]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+            futures = {pool.submit(job): name for name, job in academic_jobs}
+            for fut in concurrent.futures.as_completed(futures):
+                name = futures[fut]
+                try:
+                    part = fut.result() or []
+                except Exception as exc:
+                    logger.warning("%s search failed: %s", name, exc)
+                    continue
+                if part:
+                    used.append(name)
+                    buckets.append(part)
+        merged = merge_dedupe_hits([h for bucket in buckets for h in bucket], limit=limit)
+        if not merged:
+            try:
+                cr = search_crossref(query, limit, get_json=get_json, settings=settings)
+            except Exception as exc:
+                logger.warning("crossref search failed: %s", exc)
+                cr = []
+            if cr:
+                used.append("crossref")
+                merged = cr[:limit]
+        return merged
 
-    last_provider = "none"
-    for provider, run in providers:
-        last_provider = provider
+    def run_web(*, research_only: bool) -> list[PaperHit]:
+        nonlocal used
+        if not tavily_available(settings):
+            notes.append(
+                "Web search skipped: set SELFRAG_TAVILY_API_KEY for Research Websites / All."
+            )
+            return []
         try:
-            hits = run()
+            part = search_tavily(
+                query,
+                limit,
+                research_domains_only=research_only,
+                settings=settings,
+            )
         except Exception as exc:
-            logger.warning("%s search failed: %s", provider, exc)
-            continue
-        if hits:
-            if not injected:
-                with _cache_lock:
-                    _search_cache[cache_key] = (time.monotonic(), hits, provider)
-            return hits, provider
+            logger.warning("tavily search failed: %s", exc)
+            return []
+        if part:
+            used.append("tavily")
+        return part
 
-    return [], last_provider
+    if filt == "research_web":
+        hits = run_web(research_only=True)[:limit]
+    elif filt == "academic":
+        hits = run_academic()
+    elif filt == "open_access":
+        hits = [
+            h
+            for h in run_academic()
+            if h.open_access or h.pdf_url or h.full_text_available
+        ][:limit]
+    else:  # all
+        half = max(1, (limit + 1) // 2)
+        academic = run_academic()[:half]
+        web = run_web(research_only=False)[: max(1, limit - len(academic))]
+        hits = merge_dedupe_hits(academic + web, limit=limit)
+
+    provider = "+".join(used) if used else "none"
+    return hits, provider, used, notes
+
+
+def merge_dedupe_hits(hits: list[PaperHit], *, limit: int) -> list[PaperHit]:
+    """Dedupe by DOI, arXiv id, or normalized title+year; preserve first occurrence order."""
+
+    seen: set[str] = set()
+    out: list[PaperHit] = []
+    for hit in hits:
+        key = _dedupe_key(hit)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(hit)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _dedupe_key(hit: PaperHit) -> str:
+    if hit.doi:
+        return f"doi:{hit.doi.strip().lower()}"
+    if hit.source == "arxiv" or (hit.url and "arxiv.org" in hit.url.lower()):
+        from .arxiv_search import arxiv_pdf_url
+
+        pdf = arxiv_pdf_url(hit.paper_id) or arxiv_pdf_url(hit.url or "")
+        if pdf:
+            return f"arxiv:{pdf.rsplit('/', 1)[-1].removesuffix('.pdf').lower()}"
+    title = re.sub(r"\s+", " ", (hit.title or "").strip().lower())
+    year = hit.year or ""
+    return f"title:{title}|{year}"
 
 
 def search_semantic_scholar(
@@ -304,6 +451,17 @@ def fetch_paper(
         )
         message = payload.get("message") if isinstance(payload.get("message"), dict) else payload
         return paper_from_crossref(message if isinstance(message, dict) else payload)
+    if source == "arxiv":
+        from .arxiv_search import search_arxiv
+
+        hits = search_arxiv(paper_id, limit=1, settings=settings)
+        for hit in hits:
+            if hit.paper_id == paper_id or paper_id in (hit.paper_id or ""):
+                return hit
+        return hits[0] if hits else None
+    if source == "tavily":
+        # Snapshot-only; no server-side fetch for ephemeral web hits.
+        return None
     return None
 
 
@@ -324,8 +482,13 @@ def paper_from_semantic_scholar(row: dict[str, Any] | None) -> PaperHit | None:
             authors.append(name)
     ids = row.get("externalIds") or {}
     doi = ids.get("DOI") if isinstance(ids, dict) else None
+    arxiv_id = ids.get("ArXiv") if isinstance(ids, dict) else None
     oa = row.get("openAccessPdf") or {}
     pdf_url = oa.get("url") if isinstance(oa, dict) else None
+    if not pdf_url and arxiv_id:
+        from .arxiv_search import arxiv_pdf_url
+
+        pdf_url = arxiv_pdf_url(str(arxiv_id))
     year = row.get("year")
     try:
         year_int = int(year) if year is not None else None
@@ -344,6 +507,8 @@ def paper_from_semantic_scholar(row: dict[str, Any] | None) -> PaperHit | None:
         source="semantic_scholar",
         open_access=bool(pdf_url),
         url=row.get("url"),
+        result_kind="paper",
+        full_text_available=bool(pdf_url),
     )
 
 
@@ -390,6 +555,8 @@ def paper_from_openalex(row: dict[str, Any] | None) -> PaperHit | None:
         source="openalex",
         open_access=bool(pdf_url),
         url=raw_id or None,
+        result_kind="paper",
+        full_text_available=bool(pdf_url),
     )
 
 
@@ -438,6 +605,8 @@ def paper_from_crossref(row: dict[str, Any] | None) -> PaperHit | None:
         source="crossref",
         open_access=False,
         url=row.get("URL"),
+        result_kind="paper",
+        full_text_available=False,
     )
 
 
@@ -466,10 +635,13 @@ def hit_from_import_request(payload: Any) -> PaperHit | None:
         authors=list(payload.authors or []),
         year=payload.year,
         venue=payload.venue,
-        abstract=payload.abstract,
+        abstract=payload.abstract or getattr(payload, "summary", None),
+        summary=getattr(payload, "summary", None),
         doi=payload.doi,
         pdf_url=payload.pdf_url,
         source=payload.source,
         open_access=bool(payload.pdf_url),
         url=getattr(payload, "url", None),
+        result_kind=getattr(payload, "result_kind", None) or "paper",
+        full_text_available=bool(payload.pdf_url),
     )

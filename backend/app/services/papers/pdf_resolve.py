@@ -95,6 +95,12 @@ def pdf_candidates(
             ordered.append(url)
 
     add(hit.pdf_url)
+    # Prefer arXiv PDF when id/url looks like arXiv.
+    from .arxiv_search import arxiv_pdf_url
+
+    add(arxiv_pdf_url(hit.paper_id))
+    add(arxiv_pdf_url(hit.url))
+    add(arxiv_pdf_url(hit.doi))
     add(hit.url)
     for url in unpaywall_pdf_urls(hit.doi, get_json=get_json, settings=settings):
         add(url)

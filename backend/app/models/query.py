@@ -286,6 +286,7 @@ class PipelineResult(BaseModel):
     config_snapshot: dict[str, Any] = Field(default_factory=dict)
     unrelated_to_sources: bool = False
     mismatch_detail: str | None = None
+    uncovered_aspects: list[str] = Field(default_factory=list)
 
 
 class QueryRequest(BaseModel):

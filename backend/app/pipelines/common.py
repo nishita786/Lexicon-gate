@@ -143,6 +143,7 @@ def build_result(
     unrelated_to_sources: bool = False,
     mismatch_detail: str | None = None,
     plagiarism: PlagiarismReport | None = None,
+    uncovered_aspects: list[str] | None = None,
 ) -> PipelineResult:
     return PipelineResult(
         query_id=query_id,
@@ -169,6 +170,7 @@ def build_result(
         config_snapshot=config_snapshot or {},
         unrelated_to_sources=unrelated_to_sources,
         mismatch_detail=mismatch_detail,
+        uncovered_aspects=list(uncovered_aspects or []),
     )
 
 
