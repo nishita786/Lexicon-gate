@@ -195,9 +195,11 @@ export default function App() {
     return (
       <div className="auth-screen session-splash">
         <div className="auth-orbs" aria-hidden="true">
-          <span className="orb orb-forest" />
-          <span className="orb orb-gold" />
-          <span className="orb orb-plum" />
+          <span className="shape shape-sphere shape-a is-near" />
+          <span className="shape shape-torus shape-c" />
+          <span className="shape shape-sphere shape-b is-far" />
+          <span className="shape shape-torus shape-d" />
+          <span className="shape shape-sphere shape-e" />
         </div>
         <Logo size="hero" />
         <p className="muted">Opening the gate…</p>
@@ -212,9 +214,11 @@ export default function App() {
   return (
     <div className="app">
       <div className="app-atmosphere" aria-hidden="true">
-        <span className="orb orb-forest" />
-        <span className="orb orb-gold" />
-        <span className="orb orb-plum" />
+        <span className="shape shape-sphere shape-a is-near" />
+        <span className="shape shape-sphere shape-b is-far" />
+        <span className="shape shape-torus shape-c" />
+        <span className="shape shape-torus shape-d is-far" />
+        <span className="shape shape-sphere shape-e" />
         <span className="app-grain" />
       </div>
       <a className="skip-link" href="#main">

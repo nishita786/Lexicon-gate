@@ -122,9 +122,11 @@ export default function AuthScreen({ onSignedIn }) {
   return (
     <div className="auth-screen">
       <div className="auth-orbs" aria-hidden="true">
-        <span className="orb orb-forest" />
-        <span className="orb orb-gold" />
-        <span className="orb orb-plum" />
+        <span className="shape shape-sphere shape-a is-near" />
+        <span className="shape shape-torus shape-c" />
+        <span className="shape shape-sphere shape-b is-far" />
+        <span className="shape shape-torus shape-d" />
+        <span className="shape shape-sphere shape-e" />
       </div>
       {showIntro && (
         <div
