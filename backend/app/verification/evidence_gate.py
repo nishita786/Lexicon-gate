@@ -604,14 +604,15 @@ def decision_is_unrelated(decision: EvidenceGateDecision | None) -> bool:
 
 
 def _passages_define_subject(query: str, items: Sequence[EvidenceItem]) -> bool:
-    subject_stems = stem_set(definition_subject(query))
+    subject = definition_subject(query)
+    subject_stems = stem_set(subject)
     if not subject_stems:
         return True
     for item in items:
-        if is_definitional_sentence(item.text, subject_stems):
+        if is_definitional_sentence(item.text, subject_stems, subject=subject):
             return True
         for sentence in split_sentences(item.text, min_chars=12):
-            if is_definitional_sentence(sentence, subject_stems):
+            if is_definitional_sentence(sentence, subject_stems, subject=subject):
                 return True
     return False
 

@@ -35,6 +35,8 @@ from ...text_utils import (
     clamp,
     content_tokens,
     definition_subject,
+    extract_acronym_definition,
+    extract_copula_definition,
     first_question_clause,
     is_concept_definition_query,
     is_definition_query,
@@ -119,7 +121,8 @@ def score_sentences(
     query_tokens = content_tokens(query)
     query_stems = {stem(tok) for tok in query_tokens}
     focus_stems = {stem(tok.lower()) for term in focus_terms for tok in content_tokens(term)}
-    subject_stems = stem_set(definition_subject(query))
+    subject = definition_subject(query)
+    subject_stems = stem_set(subject)
     definitional = question_type == "definition" or is_concept_definition_query(query)
 
     for sentence in sentences:
@@ -137,9 +140,17 @@ def score_sentences(
         position_prior = 1.0 / (1.0 + 0.18 * sentence.position)
         rank_prior = 1.0 / (1.0 + 0.25 * sentence.chunk_rank)
         length_prior = clamp(len(sentence.text) / 220.0, 0.35, 1.0)
-        definition_boost = (
-            0.28 if definitional and is_definitional_sentence(sentence.text, subject_stems) else 0.0
+        defines = definitional and is_definitional_sentence(
+            sentence.text, subject_stems, subject=subject
         )
+        expansion = (
+            extract_acronym_definition(subject, sentence.text) if definitional else ""
+        )
+        definition_boost = 0.0
+        if defines:
+            definition_boost = 0.42
+        if expansion:
+            definition_boost = max(definition_boost, 0.55)
         topical = off_topic_penalty(sentence.text, query) if definitional else 0.0
 
         sentence.score = (
@@ -227,7 +238,11 @@ def declarative_stem(query: str) -> tuple[str, str]:
         match = re.match(pattern, lowered, re.I)
         if not match:
             continue
-        groups = [g.strip() for g in match.groups()]
+        # Preserve original casing (e.g. LLM, ResNet) from the query text.
+        groups = [
+            text[match.start(i) : match.end(i)].strip()
+            for i in range(1, (match.lastindex or 0) + 1)
+        ]
         try:
             built = template.format(*groups)
         except (IndexError, KeyError):  # pragma: no cover - defensive
@@ -272,16 +287,17 @@ def extract_answer_span(sentence: str, query: str, idf: dict[str, float]) -> str
 
 
 def _span_covers_subject(query: str, span: str, sentence: str) -> bool:
-    subject_stems = stem_set(definition_subject(query))
+    subject = definition_subject(query)
+    subject_stems = stem_set(subject)
     if not subject_stems:
         return True
     covered = stem_set(span) | stem_set(sentence)
     if not (subject_stems & covered):
         return False
     if is_concept_definition_query(query):
-        return is_definitional_sentence(sentence, subject_stems) or is_definitional_sentence(
-            span, subject_stems
-        )
+        return is_definitional_sentence(
+            sentence, subject_stems, subject=subject
+        ) or is_definitional_sentence(span, subject_stems, subject=subject)
     return True
 
 
@@ -298,7 +314,18 @@ def synthesise_lead(
     """
 
     query = normalise_query_text(query)
-    span = extract_answer_span(best.text, query, idf)
+    subject = definition_subject(query)
+    expansion = extract_acronym_definition(subject, best.text)
+    copula_def = extract_copula_definition(subject, best.text)
+    if expansion and is_concept_definition_query(query):
+        # Prefer the expanded meaning for acronym-style definition questions.
+        span = expansion
+        if copula_def and expansion.lower() not in copula_def.lower():
+            span = f"{expansion}, {copula_def}"
+    elif copula_def and is_concept_definition_query(query):
+        span = copula_def
+    else:
+        span = extract_answer_span(best.text, query, idf)
     span = truncate(span, 240)
     if not _span_covers_subject(query, span, best.text):
         return ""
@@ -312,12 +339,27 @@ def synthesise_lead(
     elif mode == "verb":
         sentence = f"{lead_stem} {span}"
     elif mode == "copula":
-        sentence = f"{lead_stem} {span}"
+        # "LLM is Large Language Model" → "An LLM is a Large Language Model"
+        if expansion and span.lower().startswith(expansion.lower()):
+            if len(subject) <= 6 and subject.isalpha():
+                first = subject[0].upper()
+                # Letter-name vowels: F, L, M, N, R, S, X (and A/E/I/O/U)
+                article = "An" if first in "AEFHILMNORSX" else "A"
+                bare = re.sub(r"^(?:a|an|the)\s+", "", span, flags=re.I)
+                sentence = f"{article} {subject} is a {bare}"
+            else:
+                sentence = f"{lead_stem} {span}"
+        else:
+            sentence = f"{lead_stem} {span}"
     else:
         sentence = f"{lead_stem} {span}"
 
     sentence = re.sub(r"\s+", " ", sentence).strip()
     sentence = re.sub(r"\bis is\b", "is", sentence, flags=re.I)
+    sentence = re.sub(r"\ba a\b", "a", sentence, flags=re.I)
+    sentence = re.sub(r"\ban an\b", "an", sentence, flags=re.I)
+    sentence = re.sub(r"\ba an\b", "an", sentence, flags=re.I)
+    sentence = re.sub(r"\ban a\b", "a", sentence, flags=re.I)
     sentence = re.sub(r"\bby by\b", "by", sentence, flags=re.I)
     if not sentence.endswith((".", "!", "?")):
         sentence += "."
@@ -371,7 +413,8 @@ def compose_answer(
     if extra and extra not in merged_focus:
         merged_focus.append(extra)
     definitional = question_type == "definition" or is_concept_definition_query(query)
-    subject_stems = stem_set(definition_subject(query))
+    subject = definition_subject(query)
+    subject_stems = stem_set(subject)
 
     corpus = [str(item.get("text", "")) for item in evidence]
     idf = build_idf(corpus)
@@ -386,8 +429,17 @@ def compose_answer(
     selected = select_sentences(sentences, limit=max_sentences, avoid=avoid_claims)
     if definitional and subject_stems:
         defined = [
-            item for item in selected if is_definitional_sentence(item.text, subject_stems)
+            item
+            for item in selected
+            if is_definitional_sentence(item.text, subject_stems, subject=subject)
         ]
+        if not defined:
+            # Prefer any scored definitional sentence even if MMR dropped it.
+            defined = [
+                item
+                for item in sentences
+                if is_definitional_sentence(item.text, subject_stems, subject=subject)
+            ][:max_sentences]
         if defined:
             selected = defined
         else:

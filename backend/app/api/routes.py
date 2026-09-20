@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from pydantic import BaseModel, Field
 
 from ..config import get_settings
 from ..evaluation.dataset import benchmark_dataset, load_demo_corpus
@@ -149,6 +150,8 @@ def health() -> dict[str, Any]:
 
 @router.get("/config", tags=["system"])
 def public_config() -> dict[str, Any]:
+    from ..services.tts import server_tts_available
+
     settings = get_settings()
     return {
         "evidence_threshold": settings.evidence_threshold,
@@ -158,14 +161,52 @@ def public_config() -> dict[str, Any]:
         "max_correction_loops": settings.max_correction_loops,
         "llm_provider": get_llm_provider().describe(),
         "embedding_provider": get_embedding_provider().describe(),
+        "server_tts": server_tts_available(),
     }
 
 
+class _TtsRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=8000)
+
+
+@router.post("/tts", tags=["system"])
+def synthesize_speech(payload: _TtsRequest):
+    """Return WAV audio for Read aloud. Uses macOS say when available."""
+
+    from fastapi.responses import Response
+
+    from ..services.tts import clean_tts_text, synthesize_wav
+
+    text = clean_tts_text(payload.text)
+    if not text:
+        raise HTTPException(status_code=400, detail="Nothing to speak.")
+    try:
+        audio = synthesize_wav(text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.exception("TTS failed")
+        raise HTTPException(status_code=500, detail="Speech synthesis failed") from exc
+
+    media = "audio/wav" if audio[:4] == b"RIFF" else "audio/aiff"
+    return Response(content=audio, media_type=media, headers={"Cache-Control": "no-store"})
+
+
 # ----------------------------------------------------------------------- documents
+MAX_UPLOAD_FILES = 20
+
+
 @router.post("/documents/upload", response_model=UploadResponse, tags=["documents"])
 async def upload_documents(files: list[UploadFile] = File(...)) -> UploadResponse:
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded.")
+    if len(files) > MAX_UPLOAD_FILES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Upload at most {MAX_UPLOAD_FILES} files at once (received {len(files)}).",
+        )
     kb = get_knowledge_base()
     documents = []
     warnings: list[str] = []

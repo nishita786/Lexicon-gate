@@ -43,6 +43,29 @@ export const api = {
     }),
   logout: () => request("/auth/logout", { method: "POST" }),
   health: () => request("/health"),
+  config: () => request("/config"),
+  /**
+   * Server-side TTS (macOS say). Returns a Blob of audio/wav or audio/aiff.
+   */
+  tts: async (text) => {
+    const response = await fetch(`${BASE}/tts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ text: String(text || "") }),
+    });
+    if (!response.ok) {
+      let detail = response.statusText;
+      try {
+        const body = await response.json();
+        detail = body.detail?.message || body.detail || detail;
+      } catch {
+        /* ignore */
+      }
+      throw new Error(typeof detail === "string" ? detail : "Speech synthesis failed");
+    }
+    return response.blob();
+  },
   documents: () => request("/documents"),
   clusters: () => request("/documents/clusters"),
   extractions: () => request("/documents/extractions"),

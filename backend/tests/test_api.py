@@ -173,6 +173,43 @@ def test_upload_and_query(client: TestClient):
     assert trace.json()["trace"]
 
 
+def test_upload_multiple_files_at_once(client: TestClient):
+    upload = client.post(
+        "/api/documents/upload",
+        files=[
+            (
+                "files",
+                ("a.md", b"# A\n\nAlpha discusses transformers and LLMs.\n", "text/markdown"),
+            ),
+            (
+                "files",
+                ("b.md", b"# B\n\nBeta covers React component state.\n", "text/markdown"),
+            ),
+            (
+                "files",
+                ("c.md", b"# C\n\nGamma introduces IntelliJ refactoring tips.\n", "text/markdown"),
+            ),
+        ],
+    )
+    assert upload.status_code == 200
+    body = upload.json()
+    assert len(body["documents"]) == 3
+    assert body["total_chunks"] >= 3
+
+
+def test_upload_rejects_more_than_twenty_files(client: TestClient):
+    files = [
+        (
+            "files",
+            (f"doc{i}.md", f"# Doc {i}\n\nContent {i}.\n".encode(), "text/markdown"),
+        )
+        for i in range(21)
+    ]
+    upload = client.post("/api/documents/upload", files=files)
+    assert upload.status_code == 400
+    assert "20" in upload.json()["detail"]
+
+
 def test_compare_endpoint(client: TestClient):
     seeded = client.post("/api/documents/demo")
     assert seeded.status_code == 200

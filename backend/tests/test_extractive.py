@@ -128,6 +128,50 @@ def test_extractive_provider_empty_compose_is_not_json():
     assert "{" not in response.text
 
 
+LLM_USAGE_TEXT = (
+    "Modern chatbots rely on LLMs to generate fluent replies. Fine-tuning an LLM "
+    "on domain data improves factual accuracy for specialised assistants."
+)
+
+LLM_DEFINITION_TEXT = (
+    "A Large Language Model (LLM) is a neural network trained on vast text corpora "
+    "to predict the next token. LLMs underpin conversational AI systems."
+)
+
+
+def test_compose_answers_what_is_llm_from_acronym_expansion():
+    evidence = [
+        {
+            "citation_id": 1,
+            "text": LLM_USAGE_TEXT,
+            "fused_score": 0.95,
+            "relevance_score": 0.95,
+        },
+        {
+            "citation_id": 2,
+            "text": LLM_DEFINITION_TEXT,
+            "fused_score": 0.4,
+            "relevance_score": 0.4,
+        },
+    ]
+    result = compose_answer("What is LLM?", evidence, question_type="definition")
+    lowered = result["answer"].lower()
+    assert "large language model" in lowered
+    assert "neural network" in lowered or "trained" in lowered
+
+
+def test_enhanced_answers_what_is_llm(kb, llm):
+    kb.ingest_pages("llm-usage.md", [LoadedPage(page=1, text=LLM_USAGE_TEXT)], rebuild=False)
+    kb.ingest_pages(
+        "llm-def.md", [LoadedPage(page=1, text=LLM_DEFINITION_TEXT)], rebuild=True
+    )
+    result = PipelineRunner(kb, llm, enhanced_config()).run("What is LLM?")
+    lowered = result.answer.lower()
+    assert result.abstained is False
+    assert result.status is not AnswerStatus.insufficient_evidence
+    assert "large language model" in lowered
+
+
 MATH_CONCEPTS_TEXT = (
     "Linear algebra is central to deep learning: vectors and matrices represent "
     "activations and weights, and matrix multiplication implements linear layers. "

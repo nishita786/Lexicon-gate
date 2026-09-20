@@ -1122,6 +1122,29 @@ button.linkish:focus-visible {
   margin: 0;
   border-radius: var(--radius-pill);
 }
+.ask-mic,
+.ask-speak {
+  flex-shrink: 0;
+  margin: 0;
+  border-radius: var(--radius-pill);
+  min-width: 64px;
+}
+.ask-mic.is-live,
+.ask-speak.is-live {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--ink);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.ask-voice-hint {
+  margin: 6px 2px 0;
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+.ask-speak-error {
+  margin: 8px 0 0;
+  font-size: 13px;
+}
 .ask-composer-error {
   margin: 0;
   font-size: 13px;

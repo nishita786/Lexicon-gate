@@ -125,12 +125,25 @@ _COMPOUND_RE = re.compile(
 DEFINITION_CUES: tuple[str, ...] = (
     "is a",
     "is an",
+    "is the",
+    "are a",
+    "are an",
+    "are the",
     "refers to",
+    "refer to",
     "subset of",
     "type of",
     "defined as",
     "means",
     "known as",
+    "also known as",
+    "also called",
+    "stands for",
+    "short for",
+    "abbreviation for",
+    "abbreviated as",
+    "denotes",
+    "denote",
     "branch of",
     "form of",
     "related to",
@@ -139,6 +152,19 @@ DEFINITION_CUES: tuple[str, ...] = (
     "we propose",
     "framework for",
     "framework to",
+)
+_USAGE_TAIL_PREFIXES: tuple[str, ...] = (
+    "used",
+    "applied",
+    "trained",
+    "based",
+    "shown",
+    "discussed",
+    "described",
+    "presented",
+    "studied",
+    "evaluated",
+    "compared",
 )
 _CLAUSE_CUT_RE = re.compile(
     r"\s+(?:how|and how|and what|and why|;|\?)\s+",
@@ -327,13 +353,113 @@ def is_concept_definition_query(query: str) -> bool:
     return not (tokens & skip)
 
 
-def is_definitional_sentence(text: str, subject_stems: set[str]) -> bool:
+def extract_acronym_definition(subject: str, text: str) -> str:
+    """Return the expanded form of an acronym subject when present in ``text``.
+
+    Handles ``LLM (Large Language Model)``, ``Large Language Models (LLMs)``,
+    and ``LLM stands for Large Language Model``.
+    """
+
+    subj = (subject or "").strip()
+    body = text or ""
+    if not subj or not body:
+        return ""
+
+    variants: list[str] = []
+    for base in (subj, subj.upper(), subj.lower(), subj.capitalize()):
+        if base and base not in variants:
+            variants.append(base)
+        plural = f"{base}s"
+        if base and plural not in variants:
+            variants.append(plural)
+
+    for variant in variants:
+        esc = re.escape(variant)
+        # Subject (Full Form …)
+        match = re.search(rf"\b{esc}\s*\(([^)]{{3,120}})\)", body, re.I)
+        if match:
+            expansion = match.group(1).strip(" .,;:")
+            if _looks_like_expansion(variant, expansion):
+                return expansion
+        # Full Form (Subject)
+        match = re.search(
+            rf"\b([A-Z][A-Za-z0-9][^()]{{2,100}}?)\s*\({esc}\)",
+            body,
+        )
+        if match:
+            expansion = match.group(1).strip(" .,;:")
+            if _looks_like_expansion(variant, expansion):
+                return expansion
+        match = re.search(
+            rf"\b{esc}\s+(?:stands for|short for|is short for|means|denotes)\s+"
+            rf"([^.;,\n]{{3,120}})",
+            body,
+            re.I,
+        )
+        if match:
+            return match.group(1).strip(" .,;:")
+    return ""
+
+
+def _looks_like_expansion(acronym: str, expansion: str) -> bool:
+    cleaned = re.sub(r"\s+", " ", (expansion or "").strip())
+    if len(cleaned) < 4:
+        return False
+    letters = re.sub(r"[^A-Za-z]", "", acronym)
+    if letters and cleaned.lower() == letters.lower():
+        return False
+    words = [w for w in re.split(r"\s+", cleaned) if w]
+    if len(words) >= 2:
+        return True
+    return len(cleaned) >= max(8, len(letters) + 3)
+
+
+def extract_copula_definition(subject: str, text: str) -> str:
+    """Return the predicate after ``subject is/are …`` when it looks definitional."""
+
+    subj = (subject or "").strip()
+    body = text or ""
+    if not subj or not body:
+        return ""
+    variants = {subj, f"{subj}s", subj.upper(), f"{subj.upper()}s"}
+    for variant in variants:
+        match = re.search(
+            rf"\b{re.escape(variant)}\b\s+(?:is|are|was|were)\s+(.+?)(?:[.!?;]|$)",
+            body,
+            re.I,
+        )
+        if not match:
+            continue
+        tail = match.group(1).strip(" .,;:")
+        lowered = tail.lower()
+        if any(lowered.startswith(prefix) for prefix in _USAGE_TAIL_PREFIXES):
+            continue
+        if len(tail) < 4:
+            continue
+        return tail
+    return ""
+
+
+def is_definitional_sentence(text: str, subject_stems: set[str], subject: str = "") -> bool:
     if not subject_stems:
         return False
     lowered = (text or "").lower()
     if not (subject_stems & stem_set(text)):
         return False
-    return any(cue in lowered for cue in DEFINITION_CUES)
+    if any(cue in lowered for cue in DEFINITION_CUES):
+        return True
+    subject_hint = (subject or "").strip()
+    if not subject_hint:
+        # Recover short acronym-like subjects from stems (e.g. {"llm"} → "llm").
+        for stem_token in subject_stems:
+            if 2 <= len(stem_token) <= 12 and stem_token.isalpha():
+                subject_hint = stem_token
+                break
+    if subject_hint and extract_acronym_definition(subject_hint, text):
+        return True
+    if subject_hint and extract_copula_definition(subject_hint, text):
+        return True
+    return False
 
 
 def off_topic_penalty(sentence: str, query: str) -> float:

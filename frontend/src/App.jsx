@@ -5,6 +5,16 @@ import {
   EmptyState,
   StatusBanner,
 } from "./ui";
+import {
+  createRecognition,
+  speakText,
+  speakViaServer,
+  speechRecognitionSupported,
+  speechSynthesisSupported,
+  stopSpeaking,
+  unlockAudio,
+  warmSpeechVoices,
+} from "./voice";
 
 const NAV = [
   ["ask", "Ask"],
@@ -650,7 +660,12 @@ function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, 
   const [selectedDocIds, setSelectedDocIds] = useState([]);
   const [askedQuery, setAskedQuery] = useState(() => result?.query || "");
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [listening, setListening] = useState(false);
+  const [voiceHint, setVoiceHint] = useState("");
   const threadEndRef = useRef(null);
+  const recognitionRef = useRef(null);
+  const baseQueryRef = useRef("");
+  const voiceSupported = speechRecognitionSupported();
   const emptyLibrary = docs.length === 0;
   const scopedDocs =
     askScope?.document_ids?.length
@@ -672,13 +687,78 @@ function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, 
     threadEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [result?.query_id, busy]);
 
+  useEffect(
+    () => () => {
+      recognitionRef.current?.abort();
+      recognitionRef.current = null;
+      stopSpeaking();
+    },
+    [],
+  );
+
+  useEffect(() => {
+    warmSpeechVoices();
+  }, []);
+
   function toggleDoc(id) {
     setSelectedDocIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  function stopListening() {
+    recognitionRef.current?.stop();
+    recognitionRef.current = null;
+    setListening(false);
+    setVoiceHint("");
+  }
+
+  function startListening() {
+    if (!voiceSupported || emptyLibrary || busy) return;
+    stopSpeaking();
+    stopListening();
+    baseQueryRef.current = (query || "").trim();
+    const session = createRecognition({
+      onResult: ({ display }) => {
+        const base = baseQueryRef.current;
+        const next = base ? `${base} ${display}`.trim() : display;
+        setQuery(next);
+        setVoiceHint(display ? "Listening…" : "Speak your question…");
+      },
+      onError: (err) => {
+        setError(err.message);
+        stopListening();
+      },
+      onEnd: () => {
+        recognitionRef.current = null;
+        setListening(false);
+        setVoiceHint("");
+      },
+    });
+    if (!session) {
+      setError("Voice input is not supported in this browser. Try Chrome or Edge.");
+      return;
+    }
+    recognitionRef.current = session;
+    setListening(true);
+    setVoiceHint("Speak your question…");
+    setError("");
+    try {
+      session.start();
+    } catch (err) {
+      setError(err?.message || "Could not start the microphone.");
+      stopListening();
+    }
+  }
+
+  function toggleMic() {
+    if (listening) stopListening();
+    else startListening();
   }
 
   async function ask(next = query) {
     const text = (next || "").trim();
     if (!text || emptyLibrary) return;
+    stopListening();
+    stopSpeaking();
     setBusy(true);
     setError("");
     setSelected(null);
@@ -834,7 +914,13 @@ function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, 
             value={query}
             rows={1}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder={emptyLibrary ? "Add sources first…" : "Message Lexicon Gate…"}
+            placeholder={
+              emptyLibrary
+                ? "Add sources first…"
+                : listening
+                  ? "Listening…"
+                  : "Message Lexicon Gate… or tap the mic"
+            }
             disabled={emptyLibrary || busy}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
@@ -843,6 +929,19 @@ function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, 
               }
             }}
           />
+          {voiceSupported && (
+            <button
+              type="button"
+              className={`ghost ask-mic${listening ? " is-live" : ""}`}
+              onClick={toggleMic}
+              disabled={busy || emptyLibrary}
+              aria-pressed={listening}
+              aria-label={listening ? "Stop listening" : "Speak your question"}
+              title={listening ? "Stop listening" : "Speak your question"}
+            >
+              {listening ? "Stop" : "Mic"}
+            </button>
+          )}
           <button
             type="submit"
             className={`primary ask-send${busy ? " is-busy" : ""}`}
@@ -852,7 +951,13 @@ function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, 
             {busy ? "…" : "Send"}
           </button>
         </form>
+        {listening && voiceHint ? <p className="ask-voice-hint">{voiceHint}</p> : null}
         {error && <p className="ask-composer-error error">{error}</p>}
+        {!voiceSupported && !emptyLibrary && (
+          <p className="ask-voice-hint muted">
+            Voice input needs Chrome or Edge. You can still type questions.
+          </p>
+        )}
       </div>
     </div>
   );
@@ -1101,6 +1206,8 @@ function Library({ docs, onChange, onAskTheme }) {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [clusters, setClusters] = useState([]);
+  const [uploadCount, setUploadCount] = useState(0);
+  const MAX_UPLOAD_FILES = 20;
 
   useEffect(() => {
     if (!docs.length) {
@@ -1122,9 +1229,15 @@ function Library({ docs, onChange, onAskTheme }) {
   }, [docs]);
 
   async function onUpload(event) {
-    const files = event.target.files;
-    if (!files?.length) return;
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
+    if (files.length > MAX_UPLOAD_FILES) {
+      setError(`Select up to ${MAX_UPLOAD_FILES} files at once (you picked ${files.length}).`);
+      event.target.value = "";
+      return;
+    }
     setBusy(true);
+    setUploadCount(files.length);
     setError("");
     setMessage("");
     try {
@@ -1137,6 +1250,7 @@ function Library({ docs, onChange, onAskTheme }) {
       setError(err.message);
     } finally {
       setBusy(false);
+      setUploadCount(0);
       event.target.value = "";
     }
   }
@@ -1163,11 +1277,23 @@ function Library({ docs, onChange, onAskTheme }) {
       <div className="page-title">
         <div>
           <h2>Library</h2>
-          <p>Sources Ask can use. Add papers from Find papers, or upload files here. Citation metadata comes from the paper record or the file name.</p>
+          <p>
+            Sources Ask can use. Add papers from Find papers, or upload up to {MAX_UPLOAD_FILES} PDFs
+            or text files in one go. Citation metadata comes from the paper record or the file name.
+          </p>
         </div>
         <label className={`primary upload-btn${busy ? " is-busy" : ""}`}>
-          {busy ? "Indexing…" : "Upload files"}
-          <input type="file" multiple hidden disabled={busy} onChange={onUpload} />
+          {busy
+            ? `Indexing ${uploadCount || "…"}…`
+            : `Upload up to ${MAX_UPLOAD_FILES} files`}
+          <input
+            type="file"
+            multiple
+            accept=".pdf,.txt,.md,.markdown,.docx,application/pdf,text/plain,text/markdown"
+            hidden
+            disabled={busy}
+            onChange={onUpload}
+          />
         </label>
       </div>
       <div className="spotlight spotlight-violet">
@@ -1178,7 +1304,8 @@ function Library({ docs, onChange, onAskTheme }) {
       {message && <StatusBanner tone="success">{message}</StatusBanner>}
       {!docs.length && (
         <EmptyState title="No sources yet">
-          Upload a PDF or text file, or search academic papers in <strong>Find papers</strong>.
+          Select multiple PDFs in the file picker (hold Cmd/Ctrl), or search academic papers in{" "}
+          <strong>Find papers</strong>.
         </EmptyState>
       )}
       {docs.length > 0 && clusters.length > 0 && (
@@ -1774,6 +1901,11 @@ function AnswerView({ result, docs, selected, onSelect }) {
   const conf = result.confidence || {};
   const lastGate = (result.gate_decisions || []).at(-1);
   const [copied, setCopied] = useState("");
+  const [speaking, setSpeaking] = useState(false);
+  const [speakStarting, setSpeakStarting] = useState(false);
+  const [speakError, setSpeakError] = useState("");
+  const speakHandleRef = useRef(null);
+  const canSpeak = speechSynthesisSupported();
   const evidenceByCite = useMemo(() => {
     const map = new Map();
     for (const item of result.evidence || []) map.set(item.citation_id, item);
@@ -1783,6 +1915,30 @@ function AnswerView({ result, docs, selected, onSelect }) {
   const usedNames = new Set((result.evidence || []).map((item) => item.document_name));
   const unused = docs.filter((d) => !usedIds.has(d.document_id) && !usedNames.has(d.name));
   const contradictions = result.contradictions || [];
+  const answerText = (result.answer || "").trim();
+  const canReadAloud = canSpeak && answerText && !looksLikeDumpedJson(result.answer);
+
+  useEffect(() => {
+    warmSpeechVoices();
+  }, []);
+
+  useEffect(
+    () => () => {
+      speakHandleRef.current?.stop?.();
+      speakHandleRef.current = null;
+      stopSpeaking();
+    },
+    [],
+  );
+
+  useEffect(() => {
+    speakHandleRef.current?.stop?.();
+    speakHandleRef.current = null;
+    stopSpeaking();
+    setSpeaking(false);
+    setSpeakStarting(false);
+    setSpeakError("");
+  }, [result?.query_id]);
 
   function selectCite(id) {
     const item = evidenceByCite.get(id);
@@ -1805,6 +1961,67 @@ function AnswerView({ result, docs, selected, onSelect }) {
     URL.revokeObjectURL(url);
   }
 
+  async function toggleSpeak(event) {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    if (!canReadAloud) return;
+    warmSpeechVoices();
+    unlockAudio();
+
+    if (speaking || speakStarting) {
+      speakHandleRef.current?.stop?.();
+      speakHandleRef.current = null;
+      stopSpeaking();
+      setSpeaking(false);
+      setSpeakStarting(false);
+      return;
+    }
+
+    setSpeakError("");
+    setSpeakStarting(true);
+    setSpeaking(false);
+
+    const onStart = () => {
+      setSpeakStarting(false);
+      setSpeaking(true);
+    };
+    const onEnd = () => {
+      speakHandleRef.current = null;
+      setSpeakStarting(false);
+      setSpeaking(false);
+    };
+    const onError = (err) => {
+      speakHandleRef.current = null;
+      setSpeakStarting(false);
+      setSpeaking(false);
+      setSpeakError(
+        err?.message || "Could not play audio. Check system volume and try again.",
+      );
+    };
+
+    // Prefer server TTS (macOS say) — browser SpeechSynthesis often stays silent.
+    try {
+      const handle = await speakViaServer(result.answer, {
+        onStart,
+        onEnd,
+        // Don't surface error yet — we fall back to browser speech first.
+      });
+      speakHandleRef.current = handle;
+      return;
+    } catch {
+      /* fall through to browser speech */
+    }
+
+    const handle = speakText(result.answer, { onStart, onEnd, onError });
+    if (!handle) {
+      setSpeakStarting(false);
+      setSpeaking(false);
+      setSpeakError("Could not play audio. Check system volume and try Chrome or Safari.");
+      return;
+    }
+    speakHandleRef.current = handle;
+  }
+
   return (
     <div className="chat-answer">
       {result.status === "CONFLICTING_EVIDENCE" && (
@@ -1820,7 +2037,7 @@ function AnswerView({ result, docs, selected, onSelect }) {
         </p>
       )}
       <div className="answer">
-        {!looksLikeDumpedJson(result.answer) && (result.answer || "").trim() && (
+        {!looksLikeDumpedJson(result.answer) && answerText && (
           <AnswerText text={result.answer} onCite={selectCite} />
         )}
       </div>
@@ -1835,8 +2052,25 @@ function AnswerView({ result, docs, selected, onSelect }) {
         <button type="button" className="ghost" onClick={saveAnswer}>
           Save
         </button>
+        {canReadAloud && (
+          <button
+            type="button"
+            className={`ghost ask-speak${speaking || speakStarting ? " is-live" : ""}`}
+            onClick={toggleSpeak}
+            aria-pressed={speaking || speakStarting}
+            aria-label={
+              speaking || speakStarting ? "Stop reading aloud" : "Read answer aloud"
+            }
+          >
+            {speaking || speakStarting ? "Stop" : "Read aloud"}
+          </button>
+        )}
         {copied === "failed" && <span className="error">Copy failed</span>}
       </div>
+      {speakStarting && !speaking ? (
+        <p className="ask-voice-hint">Starting speech…</p>
+      ) : null}
+      {speakError ? <p className="error ask-speak-error">{speakError}</p> : null}
 
       {contradictions.length > 0 && (
         <details className="chat-panel" open>
