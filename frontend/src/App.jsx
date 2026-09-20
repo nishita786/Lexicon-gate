@@ -5,6 +5,8 @@ import {
   EmptyState,
   StatusBanner,
 } from "./ui";
+import WritePage, { StoryReader } from "./Write";
+import { parseStoryHash } from "./markdown";
 import {
   createRecognition,
   speakText,
@@ -18,6 +20,7 @@ import {
 
 const NAV = [
   ["ask", "Ask"],
+  ["write", "Write"],
   ["find", "Find papers"],
   ["library", "Library"],
   ["compare", "Compare"],
@@ -48,11 +51,26 @@ export default function App() {
   const [activeRecentId, setActiveRecentId] = useState(null);
   const [findRestore, setFindRestore] = useState(null);
   const [comparePrefill, setComparePrefill] = useState(null);
+  const [publicSlug, setPublicSlug] = useState(() => parseStoryHash());
   const navRef = useRef(null);
 
   useEffect(() => {
     api.me().then(setSession).catch(() => setSession(null));
   }, []);
+
+  useEffect(() => {
+    function onHash() {
+      setPublicSlug(parseStoryHash());
+    }
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  useEffect(() => {
+    if (session && publicSlug) {
+      setPage("write");
+    }
+  }, [session, publicSlug]);
 
   useEffect(() => {
     function onLost() {
@@ -218,6 +236,27 @@ export default function App() {
   }
 
   if (!session) {
+    if (publicSlug) {
+      return (
+        <div className="app story-public-shell">
+          <div className="app-atmosphere" aria-hidden="true">
+            <span className="shape shape-sphere shape-a is-near" />
+            <span className="shape shape-torus shape-c" />
+            <span className="app-grain" />
+          </div>
+          <main className="main story-public-main">
+            <StoryReader
+              slug={publicSlug}
+              showSignIn
+              onClose={() => {
+                window.location.hash = "";
+                setPublicSlug(null);
+              }}
+            />
+          </main>
+        </div>
+      );
+    }
     return <AuthScreen onSignedIn={setSession} />;
   }
 
@@ -322,6 +361,7 @@ export default function App() {
               onClearScope={() => setAskScope(null)}
             />
           )}
+          {page === "write" && <WritePage />}
           {page === "find" && (
             <FindPapers
               onImported={refresh}
@@ -333,10 +373,6 @@ export default function App() {
             <Library
               docs={docs}
               onChange={refresh}
-              onAskTheme={(scope) => {
-                setAskScope(scope);
-                setPage("ask");
-              }}
             />
           )}
           {page === "compare" && (
@@ -1201,32 +1237,12 @@ function FindPapers({ onImported, onRecentsChange, restore }) {
   );
 }
 
-function Library({ docs, onChange, onAskTheme }) {
+function Library({ docs, onChange }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const [clusters, setClusters] = useState([]);
   const [uploadCount, setUploadCount] = useState(0);
   const MAX_UPLOAD_FILES = 20;
-
-  useEffect(() => {
-    if (!docs.length) {
-      setClusters([]);
-      return;
-    }
-    let cancelled = false;
-    api
-      .clusters()
-      .then((payload) => {
-        if (!cancelled) setClusters(payload.clusters || []);
-      })
-      .catch(() => {
-        if (!cancelled) setClusters([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [docs]);
 
   async function onUpload(event) {
     const files = Array.from(event.target.files || []);
@@ -1307,47 +1323,6 @@ function Library({ docs, onChange, onAskTheme }) {
           Select multiple PDFs in the file picker (hold Cmd/Ctrl), or search academic papers in{" "}
           <strong>Find papers</strong>.
         </EmptyState>
-      )}
-      {docs.length > 0 && clusters.length > 0 && (
-        <div className="card" style={{ marginBottom: 16 }}>
-          <h3>Themes</h3>
-          <p className="status" style={{ marginTop: 0 }}>
-            Related papers grouped by content. Ask a theme to retrieve only those sources.
-          </p>
-          <div className="theme-grid">
-            {clusters.map((cluster) => {
-              const members = (cluster.document_ids || [])
-                .map((id) => docs.find((doc) => doc.document_id === id))
-                .filter(Boolean);
-              return (
-                <div key={cluster.cluster_id} className="theme-card">
-                  <strong>{cluster.label}</strong>
-                  <div className="status" style={{ margin: "6px 0" }}>
-                    {cluster.size} paper{cluster.size === 1 ? "" : "s"}
-                    {cluster.keywords?.length ? ` · ${cluster.keywords.slice(0, 3).join(" · ")}` : ""}
-                  </div>
-                  <ul className="theme-papers">
-                    {members.map((doc) => (
-                      <li key={doc.document_id}>{doc.title || doc.name}</li>
-                    ))}
-                  </ul>
-                  <button
-                    className="ghost"
-                    type="button"
-                    onClick={() =>
-                      onAskTheme({
-                        label: cluster.label,
-                        document_ids: cluster.document_ids,
-                      })
-                    }
-                  >
-                    Ask this theme
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        </div>
       )}
       {docs.length > 0 && (
         <div className="card">

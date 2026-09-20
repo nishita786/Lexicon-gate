@@ -26,6 +26,7 @@ class AuthGateMiddleware(BaseHTTPMiddleware):
             or path.startswith("/api/auth")
             or path.startswith("/docs")
             or path.startswith("/redoc")
+            or (request.method == "GET" and path.startswith("/api/stories/public"))
         ):
             return await call_next(request)
         if path.startswith("/api/"):

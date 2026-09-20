@@ -8,7 +8,11 @@ async function request(path, options = {}) {
     credentials: "include",
   });
   if (!response.ok) {
-    if (response.status === 401 && !path.startsWith("/auth")) {
+    if (
+      response.status === 401 &&
+      !path.startsWith("/auth") &&
+      !path.startsWith("/stories/public")
+    ) {
       window.dispatchEvent(new Event("selfrag-auth-lost"));
     }
     let detail = response.statusText;
@@ -375,6 +379,28 @@ export const api = {
         body: JSON.stringify({ text }),
       }
     ),
+  listMyStories: () => request("/stories/mine"),
+  listPublicStories: (limit = 40) => request(`/stories/public?limit=${limit}`),
+  getPublicStory: (slug) => request(`/stories/public/${encodeURIComponent(slug)}`),
+  getStory: (id) => request(`/stories/${encodeURIComponent(id)}`),
+  createStory: (payload) =>
+    request("/stories", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  updateStory: (id, payload) =>
+    request(`/stories/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  publishStory: (id) =>
+    request(`/stories/${encodeURIComponent(id)}/publish`, { method: "POST" }),
+  unpublishStory: (id) =>
+    request(`/stories/${encodeURIComponent(id)}/unpublish`, { method: "POST" }),
+  deleteStory: (id) =>
+    request(`/stories/${encodeURIComponent(id)}`, { method: "DELETE" }),
 };
 
 export function pct(value) {

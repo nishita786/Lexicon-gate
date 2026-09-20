@@ -1,0 +1,131 @@
+"""Write / Stories publish and public read tests."""
+
+from __future__ import annotations
+
+from fastapi.testclient import TestClient
+
+from app.main import create_app
+from app.services.auth.sessions import clear_sessions
+from app.services.auth.users import create_user
+from app.services.stories import store as story_store
+
+
+def _auth_client(settings, monkeypatch, tmp_path, email: str, name: str = "Author"):
+    monkeypatch.setenv("SELFRAG_AUTH_REQUIRED", "true")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    clear_sessions()
+    root = tmp_path / "stories"
+    monkeypatch.setattr(story_store, "_ROOT", root)
+    create_user(settings, email, "secret-pass", name)
+    app = create_app()
+    client = TestClient(app)
+    login = client.post("/api/auth/login", json={"email": email, "password": "secret-pass"})
+    assert login.status_code == 200
+    return client
+
+
+def _second_client(settings, email: str, name: str = "Other"):
+    clear_sessions()
+    try:
+        create_user(settings, email, "secret-pass", name)
+    except ValueError:
+        pass
+    client = TestClient(create_app())
+    login = client.post("/api/auth/login", json={"email": email, "password": "secret-pass"})
+    assert login.status_code == 200
+    return client
+
+
+def test_create_publish_public_unpublish(settings, monkeypatch, tmp_path):
+    client = _auth_client(settings, monkeypatch, tmp_path, "writer@example.com", "Writer")
+
+    created = client.post(
+        "/api/stories",
+        json={"title": "What is an LLM?", "body_md": "An **LLM** is a large language model."},
+    )
+    assert created.status_code == 200, created.text
+    story = created.json()
+    assert story["status"] == "draft"
+    assert story["slug"] == "what-is-an-llm"
+    story_id = story["story_id"]
+
+    mine = client.get("/api/stories/mine")
+    assert mine.status_code == 200
+    assert mine.json()["total"] == 1
+
+    # Draft not on public feed
+    anon = TestClient(create_app())
+    feed = anon.get("/api/stories/public")
+    assert feed.status_code == 200
+    assert feed.json()["total"] == 0
+
+    published = client.post(f"/api/stories/{story_id}/publish")
+    assert published.status_code == 200
+    assert published.json()["status"] == "published"
+    assert published.json()["published_at"]
+
+    feed = anon.get("/api/stories/public")
+    assert feed.json()["total"] == 1
+    assert feed.json()["stories"][0]["title"] == "What is an LLM?"
+
+    by_slug = anon.get("/api/stories/public/what-is-an-llm")
+    assert by_slug.status_code == 200
+    assert "large language model" in by_slug.json()["body_md"]
+
+    client.post(f"/api/stories/{story_id}/unpublish")
+    assert anon.get("/api/stories/public").json()["total"] == 0
+    assert anon.get("/api/stories/public/what-is-an-llm").status_code == 404
+
+
+def test_patch_and_slug_uniqueness(settings, monkeypatch, tmp_path):
+    client = _auth_client(settings, monkeypatch, tmp_path, "a@example.com")
+    first = client.post("/api/stories", json={"title": "Same Title", "body_md": "One"}).json()
+    second = client.post("/api/stories", json={"title": "Same Title", "body_md": "Two"}).json()
+    assert first["slug"] == "same-title"
+    assert second["slug"] == "same-title-2"
+
+    patched = client.patch(
+        f"/api/stories/{first['story_id']}",
+        json={"title": "Updated", "body_md": "New body"},
+    )
+    assert patched.status_code == 200
+    assert patched.json()["title"] == "Updated"
+    assert patched.json()["slug"] == "updated"
+
+
+def test_non_owner_cannot_edit(settings, monkeypatch, tmp_path):
+    owner = _auth_client(settings, monkeypatch, tmp_path, "owner@example.com", "Owner")
+    story_id = owner.post(
+        "/api/stories",
+        json={"title": "Private draft", "body_md": "Secret notes"},
+    ).json()["story_id"]
+
+    other = _second_client(settings, "other@example.com", "Other")
+    assert other.get(f"/api/stories/{story_id}").status_code == 403
+    assert other.patch(f"/api/stories/{story_id}", json={"title": "Hack"}).status_code == 403
+    assert other.post(f"/api/stories/{story_id}/publish").status_code == 403
+    assert other.delete(f"/api/stories/{story_id}").status_code == 403
+
+
+def test_mine_requires_auth(settings, monkeypatch, tmp_path):
+    monkeypatch.setenv("SELFRAG_AUTH_REQUIRED", "true")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setattr(story_store, "_ROOT", tmp_path / "stories")
+    clear_sessions()
+    anon = TestClient(create_app())
+    assert anon.get("/api/stories/mine").status_code == 401
+    assert anon.get("/api/stories/public").status_code == 200
+
+
+def test_delete_story(settings, monkeypatch, tmp_path):
+    client = _auth_client(settings, monkeypatch, tmp_path, "del@example.com")
+    story_id = client.post(
+        "/api/stories",
+        json={"title": "Temp", "body_md": "Gone soon"},
+    ).json()["story_id"]
+    assert client.delete(f"/api/stories/{story_id}").status_code == 204
+    assert client.get(f"/api/stories/{story_id}").status_code == 404
