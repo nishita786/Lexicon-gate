@@ -123,10 +123,10 @@ export default function AuthScreen({ onSignedIn }) {
     <div className="auth-screen">
       <div className="auth-orbs" aria-hidden="true">
         <span className="shape shape-sphere shape-a is-near" />
-        <span className="shape shape-torus shape-c" />
+        <span className="shape shape-torus shape-c is-mid" />
         <span className="shape shape-sphere shape-b is-far" />
-        <span className="shape shape-torus shape-d" />
-        <span className="shape shape-sphere shape-e" />
+        <span className="shape shape-torus shape-d is-far" />
+        <span className="shape shape-sphere shape-e is-near" />
       </div>
       {showIntro && (
         <div
