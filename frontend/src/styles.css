@@ -2810,6 +2810,69 @@ button.danger:hover:not(:disabled) {
 .write-workspace-banner.view {
   background: color-mix(in srgb, var(--ink-muted) 12%, transparent);
 }
+.collab-page {
+  display: grid;
+  gap: 16px;
+}
+.collab-rid-card {
+  display: grid;
+  gap: 8px;
+  padding: 16px 18px;
+  border-radius: 16px;
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.12);
+  backdrop-filter: var(--glass-blur);
+}
+.collab-rid-card h3 {
+  margin: 0;
+  font-size: 15px;
+}
+.collab-layout {
+  display: grid;
+  grid-template-columns: minmax(200px, 260px) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+.collab-side {
+  display: grid;
+  gap: 16px;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.12);
+  backdrop-filter: var(--glass-blur);
+}
+.collab-main {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border-radius: 22px;
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.14);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--lift);
+  min-height: 280px;
+}
+.collab-paper-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.collab-paper-head h3 {
+  margin: 0 0 4px;
+  font-size: 1.25rem;
+}
+.collab-manage {
+  padding-top: 4px;
+  border-top: none;
+}
+@media (max-width: 860px) {
+  .collab-layout {
+    grid-template-columns: 1fr;
+  }
+}
 .write-editor {
   display: grid;
   gap: 12px;
@@ -2829,6 +2892,12 @@ button.danger:hover:not(:disabled) {
   font-weight: 600;
   color: var(--ink);
   outline: none;
+}
+.write-title-readonly {
+  margin: 0;
+  cursor: default;
+  pointer-events: none;
+  user-select: text;
 }
 .write-toolbar {
   display: flex;

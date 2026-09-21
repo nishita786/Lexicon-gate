@@ -6,12 +6,13 @@ It will refuse when the sources cannot support a reliable answer. It does not fi
 
 ## What you get
 
-1. **Ask** — default home: question your library with one verification badge, citations, and evidence; **New Chat** starts a blank session; **Recents** in the sidebar reopen past Ask chats and paper searches.
-2. **Write** — draft **IEEE research-paper** sections (abstract through references), invite teammates by **Researcher ID** (editor or viewer) into a **shared workspace**, **download a Word (.docx)** file, or publish a public `#/s/{slug}` link.
-3. **Find papers** — quick search with filters (**All**, **Academic Papers**, **Research Websites**, **Open Access**) across Semantic Scholar, OpenAlex, arXiv, and optional [Tavily](https://tavily.com) web search (`SELFRAG_TAVILY_API_KEY`). Add open-access PDFs (or honest abstract/page fallbacks) to your library.
-4. **Library** — your sources (imported papers or uploaded files).
-5. **Compare** — side-by-side structure across papers in your library.
-6. **Events** — browse India and worldwide tech, IEEE, and research CFP events that are open to apply; apply on the official site.
+1. **Collaborators** — share your **Researcher ID**, invite teammates (editor or viewer) onto IEEE papers, and open **shared workspaces**.
+2. **Ask** — default home: question your library with one verification badge, citations, and evidence; **New Chat** starts a blank session; **Recents** in the sidebar reopen past Ask chats and paper searches.
+3. **Write** — draft **IEEE research-paper** sections (abstract through references), **download a Word (.docx)** file, or publish a public `#/s/{slug}` link.
+4. **Find papers** — quick search with filters (**All**, **Academic Papers**, **Research Websites**, **Open Access**) across Semantic Scholar, OpenAlex, arXiv, and optional [Tavily](https://tavily.com) web search (`SELFRAG_TAVILY_API_KEY`). Add open-access PDFs (or honest abstract/page fallbacks) to your library.
+5. **Library** — your sources (imported papers or uploaded files).
+6. **Compare** — side-by-side structure across papers in your library.
+7. **Events** — browse India and worldwide tech, IEEE, and research CFP events that are open to apply; apply on the official site.
 
 There is no notebook and no pipeline picker. Evaluation stays in pytest for quality checks.
 

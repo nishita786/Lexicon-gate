@@ -6,6 +6,7 @@ import {
   StatusBanner,
 } from "./ui";
 import WritePage, { StoryReader } from "./Write";
+import CollaboratorsPage from "./Collaborators";
 import { parseStoryHash } from "./markdown";
 import {
   createRecognition,
@@ -19,6 +20,7 @@ import {
 } from "./voice";
 
 const NAV = [
+  ["collaborators", "Collaborators"],
   ["ask", "Ask"],
   ["write", "Write"],
   ["find", "Find papers"],
@@ -51,6 +53,7 @@ export default function App() {
   const [activeRecentId, setActiveRecentId] = useState(null);
   const [findRestore, setFindRestore] = useState(null);
   const [comparePrefill, setComparePrefill] = useState(null);
+  const [writeStoryId, setWriteStoryId] = useState(null);
   const [publicSlug, setPublicSlug] = useState(() => parseStoryHash());
   const navRef = useRef(null);
 
@@ -346,6 +349,15 @@ export default function App() {
           </span>
         </header>
         <main className="main" id="main" data-page={page} key={page}>
+          {page === "collaborators" && (
+            <CollaboratorsPage
+              session={session}
+              onOpenPaper={(id) => {
+                setWriteStoryId(id);
+                setPage("write");
+              }}
+            />
+          )}
           {page === "ask" && (
             <Ask
               key={chatEpoch}
@@ -361,7 +373,13 @@ export default function App() {
               onClearScope={() => setAskScope(null)}
             />
           )}
-          {page === "write" && <WritePage session={session} />}
+          {page === "write" && (
+            <WritePage
+              session={session}
+              openStoryId={writeStoryId}
+              onOpenStoryConsumed={() => setWriteStoryId(null)}
+            />
+          )}
           {page === "find" && (
             <FindPapers
               onImported={refresh}

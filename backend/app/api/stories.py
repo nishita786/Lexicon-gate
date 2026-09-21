@@ -13,6 +13,7 @@ from ..models.stories import (
     Story,
     StoryCollaboratorUpdate,
     StoryCreate,
+    StoryDetail,
     StoryInvite,
     StoryInviteCreate,
     StoryListResponse,
@@ -34,6 +35,11 @@ def _require_user(request: Request) -> dict:
 
 def _user_id(user: dict) -> str:
     return str(user.get("user_id") or user.get("id") or "")
+
+
+def _with_role(story: Story, user_id: str) -> StoryDetail:
+    role = story_store.access_role(story, user_id)
+    return StoryDetail(**story.model_dump(), my_role=role)  # type: ignore[arg-type]
 
 
 def _to_public(story: Story) -> PublicStory:
@@ -113,17 +119,18 @@ def pending_story_invites(request: Request) -> PendingStoryInviteList:
     return PendingStoryInviteList(invites=invites)
 
 
-@router.post("/invites/{invite_id}/accept", response_model=Story)
-def accept_story_invite(invite_id: str, request: Request) -> Story:
+@router.post("/invites/{invite_id}/accept", response_model=StoryDetail)
+def accept_story_invite(invite_id: str, request: Request) -> StoryDetail:
     user = _require_user(request)
     try:
-        return story_store.accept_invite(
+        story = story_store.accept_invite(
             invite_id,
             user_id=_user_id(user),
             name=str(user.get("name") or ""),
             email=str(user.get("email") or ""),
             researcher_id=str(user.get("researcher_id") or ""),
         )
+        return _with_role(story, _user_id(user))
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except PermissionError as exc:
@@ -146,10 +153,10 @@ def decline_story_invite(invite_id: str, request: Request) -> Response:
     return Response(status_code=204)
 
 
-@router.post("", response_model=Story)
-def create_story(payload: StoryCreate, request: Request) -> Story:
+@router.post("", response_model=StoryDetail)
+def create_story(payload: StoryCreate, request: Request) -> StoryDetail:
     user = _require_user(request)
-    return story_store.create_story(
+    story = story_store.create_story(
         title=payload.title,
         body_md=payload.body_md or "",
         author_user_id=_user_id(user),
@@ -160,6 +167,7 @@ def create_story(payload: StoryCreate, request: Request) -> Story:
         affiliation=payload.affiliation,
         sections=payload.sections,
     )
+    return _with_role(story, _user_id(user))
 
 
 @router.get("/{story_id}/docx")
@@ -173,22 +181,22 @@ def download_story_docx(story_id: str, request: Request) -> RawResponse:
     return _docx_response(story)
 
 
-@router.get("/{story_id}", response_model=Story)
-def get_story(story_id: str, request: Request) -> Story:
+@router.get("/{story_id}", response_model=StoryDetail)
+def get_story(story_id: str, request: Request) -> StoryDetail:
     user = _require_user(request)
     story = story_store.get_story(story_id)
     if story is None:
         raise HTTPException(status_code=404, detail="Story not found.")
     if not story_store.can_view(story, _user_id(user)):
         raise HTTPException(status_code=403, detail="You do not have access to this paper.")
-    return story
+    return _with_role(story, _user_id(user))
 
 
-@router.patch("/{story_id}", response_model=Story)
-def update_story(story_id: str, payload: StoryUpdate, request: Request) -> Story:
+@router.patch("/{story_id}", response_model=StoryDetail)
+def update_story(story_id: str, payload: StoryUpdate, request: Request) -> StoryDetail:
     user = _require_user(request)
     try:
-        return story_store.update_story(
+        story = story_store.update_story(
             story_id,
             actor_user_id=_user_id(user),
             title=payload.title,
@@ -198,6 +206,7 @@ def update_story(story_id: str, payload: StoryUpdate, request: Request) -> Story
             affiliation=payload.affiliation,
             sections=payload.sections,
         )
+        return _with_role(story, _user_id(user))
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except PermissionError as exc:
@@ -206,11 +215,12 @@ def update_story(story_id: str, payload: StoryUpdate, request: Request) -> Story
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post("/{story_id}/publish", response_model=Story)
-def publish_story(story_id: str, request: Request) -> Story:
+@router.post("/{story_id}/publish", response_model=StoryDetail)
+def publish_story(story_id: str, request: Request) -> StoryDetail:
     user = _require_user(request)
     try:
-        return story_store.publish_story(story_id, author_user_id=_user_id(user))
+        story = story_store.publish_story(story_id, author_user_id=_user_id(user))
+        return _with_role(story, _user_id(user))
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except PermissionError as exc:
@@ -219,11 +229,12 @@ def publish_story(story_id: str, request: Request) -> Story:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.post("/{story_id}/unpublish", response_model=Story)
-def unpublish_story(story_id: str, request: Request) -> Story:
+@router.post("/{story_id}/unpublish", response_model=StoryDetail)
+def unpublish_story(story_id: str, request: Request) -> StoryDetail:
     user = _require_user(request)
     try:
-        return story_store.unpublish_story(story_id, author_user_id=_user_id(user))
+        story = story_store.unpublish_story(story_id, author_user_id=_user_id(user))
+        return _with_role(story, _user_id(user))
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except PermissionError as exc:
@@ -270,34 +281,36 @@ def invite_collaborator(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.delete("/{story_id}/invites/{invite_id}", response_model=Story)
-def revoke_collaborator_invite(story_id: str, invite_id: str, request: Request) -> Story:
+@router.delete("/{story_id}/invites/{invite_id}", response_model=StoryDetail)
+def revoke_collaborator_invite(story_id: str, invite_id: str, request: Request) -> StoryDetail:
     user = _require_user(request)
     try:
-        return story_store.revoke_invite(
+        story = story_store.revoke_invite(
             story_id, invite_id, owner_user_id=_user_id(user)
         )
+        return _with_role(story, _user_id(user))
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
-@router.patch("/{story_id}/collaborators/{collaborator_user_id}", response_model=Story)
+@router.patch("/{story_id}/collaborators/{collaborator_user_id}", response_model=StoryDetail)
 def patch_collaborator_role(
     story_id: str,
     collaborator_user_id: str,
     payload: StoryCollaboratorUpdate,
     request: Request,
-) -> Story:
+) -> StoryDetail:
     user = _require_user(request)
     try:
-        return story_store.update_collaborator_role(
+        story = story_store.update_collaborator_role(
             story_id,
             collaborator_user_id,
             owner_user_id=_user_id(user),
             role=payload.role,
         )
+        return _with_role(story, _user_id(user))
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except PermissionError as exc:
@@ -306,17 +319,18 @@ def patch_collaborator_role(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.delete("/{story_id}/collaborators/{collaborator_user_id}", response_model=Story)
+@router.delete("/{story_id}/collaborators/{collaborator_user_id}", response_model=StoryDetail)
 def remove_story_collaborator(
     story_id: str, collaborator_user_id: str, request: Request
-) -> Story:
+) -> StoryDetail:
     user = _require_user(request)
     try:
-        return story_store.remove_collaborator(
+        story = story_store.remove_collaborator(
             story_id,
             collaborator_user_id,
             actor_user_id=_user_id(user),
         )
+        return _with_role(story, _user_id(user))
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except PermissionError as exc:

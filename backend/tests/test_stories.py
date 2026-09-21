@@ -233,6 +233,8 @@ def test_story_collaborators_invite_edit_and_viewer(settings, monkeypatch, tmp_p
     v_id = v_invite.json()["invite_id"]
     assert viewer.post(f"/api/stories/invites/{v_id}/accept").status_code == 200
     assert viewer.get(f"/api/stories/{story_id}").status_code == 200
+    viewed = viewer.get(f"/api/stories/{story_id}").json()
+    assert viewed["my_role"] == "viewer"
     assert (
         viewer.patch(
             f"/api/stories/{story_id}",
@@ -240,6 +242,11 @@ def test_story_collaborators_invite_edit_and_viewer(settings, monkeypatch, tmp_p
         ).status_code
         == 403
     )
+    assert viewer.post(f"/api/stories/{story_id}/publish").status_code == 403
+    assert viewer.delete(f"/api/stories/{story_id}").status_code == 403
+    # Editor role receives my_role editor and can patch.
+    guest_view = guest.get(f"/api/stories/{story_id}").json()
+    assert guest_view["my_role"] == "editor"
 
     # Decline path
     stranger = _login_client(settings, "paper.stranger@example.com", "Stranger")

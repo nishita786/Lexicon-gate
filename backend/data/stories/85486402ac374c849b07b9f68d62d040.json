@@ -8,7 +8,37 @@
   "author_name": "Nishita Kumari",
   "author_researcher_id": "LG-FFGE-LYQR",
   "status": "published",
+  "format": "freeform",
+  "authors_line": "",
+  "affiliation": "",
+  "sections": {
+    "abstract": "",
+    "keywords": "",
+    "introduction": "",
+    "related_work": "",
+    "methodology": "",
+    "results": "",
+    "discussion": "",
+    "limitations": "",
+    "conclusion": "",
+    "references": ""
+  },
+  "collaborators": [],
+  "invites": [
+    {
+      "invite_id": "9c143de7d2214fdf841f106fb1175e00",
+      "recipient_user_id": "48651d1dc3594e29ab0f3d55283b8ced",
+      "recipient_researcher_id": "LG-LKH2-MWTU",
+      "recipient_name": "lex",
+      "recipient_email": "lex123@gmail.com",
+      "role": "editor",
+      "status": "accepted",
+      "invited_by": "955bd13f9c604156b1606092f340fc8d",
+      "invited_by_name": "Nishita Kumari",
+      "created_at": "2026-09-21T10:06:32.397544+00:00"
+    }
+  ],
   "created_at": "2026-09-20T07:32:18.945669+00:00",
-  "updated_at": "2026-09-21T03:46:30.633391+00:00",
+  "updated_at": "2026-09-21T10:08:38.331778+00:00",
   "published_at": "2026-09-20T07:32:49.346437+00:00"
 }

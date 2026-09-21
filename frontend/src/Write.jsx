@@ -148,12 +148,10 @@ export function StoryReader({ slug, onClose, showSignIn }) {
   );
 }
 
-export default function WritePage({ onOpenStory, session }) {
+export default function WritePage({ onOpenStory, session, openStoryId, onOpenStoryConsumed }) {
   const [tab, setTab] = useState("mine");
   const [mine, setMine] = useState([]);
-  const [shared, setShared] = useState([]);
   const [feed, setFeed] = useState([]);
-  const [pendingInvites, setPendingInvites] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [title, setTitle] = useState("");
   const [authorsLine, setAuthorsLine] = useState("");
@@ -162,12 +160,8 @@ export default function WritePage({ onOpenStory, session }) {
   const [activeSection, setActiveSection] = useState("abstract");
   const [status, setStatus] = useState("draft");
   const [slug, setSlug] = useState("");
-  const [collaborators, setCollaborators] = useState([]);
-  const [storyInvites, setStoryInvites] = useState([]);
   const [authorUserId, setAuthorUserId] = useState("");
-  const [myRole, setMyRole] = useState("owner");
-  const [inviteRid, setInviteRid] = useState("");
-  const [inviteRole, setInviteRole] = useState("editor");
+  const [myRole, setMyRole] = useState(null);
   const [preview, setPreview] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -176,7 +170,8 @@ export default function WritePage({ onOpenStory, session }) {
 
   const myUserId = session?.user_id || session?.id || "";
   const isOwner = myRole === "owner";
-  const canEdit = myRole === "owner" || myRole === "editor";
+  const isViewer = myRole === "viewer";
+  const canEdit = !selectedId || myRole === "owner" || myRole === "editor";
   const canPublish = isOwner;
   const canDelete = isOwner;
   const readOnly = Boolean(selectedId) && !canEdit;
@@ -200,26 +195,24 @@ export default function WritePage({ onOpenStory, session }) {
     affiliation.trim() ||
     Object.values(sections).some((v) => (v || "").trim());
   const dirty = Boolean(selectedId || hasContent);
-  const pendingOnStory = (storyInvites || []).filter((i) => i.status === "pending");
 
   function resolveRole(story) {
-    if (!story) return "owner";
-    if (story.author_user_id === myUserId) return "owner";
+    if (!story) return null;
+    if (story.my_role === "owner" || story.my_role === "editor" || story.my_role === "viewer") {
+      return story.my_role;
+    }
+    if (myUserId && story.author_user_id === myUserId) return "owner";
     const collab = (story.collaborators || []).find((c) => c.user_id === myUserId);
     return collab?.role || "viewer";
   }
 
   async function refreshLists() {
-    const [myStories, sharedStories, publicStories, invites] = await Promise.all([
+    const [myStories, publicStories] = await Promise.all([
       api.listMyStories(),
-      api.listSharedStories(),
       api.listPublicStories(40),
-      api.listStoryInvitesPending(),
     ]);
     setMine(myStories.stories || []);
-    setShared(sharedStories.stories || []);
     setFeed(publicStories.stories || []);
-    setPendingInvites(invites.invites || []);
   }
 
   useEffect(() => {
@@ -237,6 +230,33 @@ export default function WritePage({ onOpenStory, session }) {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
+  useEffect(() => {
+    if (!openStoryId) return;
+    let cancelled = false;
+    (async () => {
+      setBusy(true);
+      setError("");
+      try {
+        const story = await api.getStory(openStoryId);
+        if (cancelled) return;
+        applyStory(story);
+        setTab("mine");
+        setMessage("Opened shared workspace from Collaborators.");
+      } catch (err) {
+        if (!cancelled) setError(err.message);
+      } finally {
+        if (!cancelled) {
+          setBusy(false);
+          onOpenStoryConsumed?.();
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openStoryId]);
+
   function resetEditor() {
     setSelectedId(null);
     setTitle("");
@@ -246,16 +266,13 @@ export default function WritePage({ onOpenStory, session }) {
     setActiveSection("abstract");
     setStatus("draft");
     setSlug("");
-    setCollaborators([]);
-    setStoryInvites([]);
     setAuthorUserId(myUserId);
-    setMyRole("owner");
-    setInviteRid("");
-    setInviteRole("editor");
+    setMyRole(null);
     setPreview(false);
   }
 
   function applyStory(story) {
+    const role = resolveRole(story);
     setSelectedId(story.story_id);
     setTitle(story.title || "");
     setAuthorsLine(story.authors_line || story.author_name || "");
@@ -263,10 +280,10 @@ export default function WritePage({ onOpenStory, session }) {
     setSections({ ...emptySections(), ...(story.sections || {}) });
     setStatus(story.status || "draft");
     setSlug(story.slug || "");
-    setCollaborators(story.collaborators || []);
-    setStoryInvites(story.invites || []);
     setAuthorUserId(story.author_user_id || "");
-    setMyRole(resolveRole(story));
+    setMyRole(role);
+    // Viewers never enter the editor — preview only.
+    setPreview(role === "viewer" ? true : false);
   }
 
   async function loadStory(id) {
@@ -296,8 +313,8 @@ export default function WritePage({ onOpenStory, session }) {
   }
 
   async function saveStory() {
-    if (readOnly) {
-      setError("You have view-only access to this shared workspace.");
+    if (readOnly || isViewer) {
+      setError("View-only access — you cannot edit this paper.");
       return;
     }
     setBusy(true);
@@ -322,7 +339,7 @@ export default function WritePage({ onOpenStory, session }) {
   }
 
   async function publish() {
-    if (!canPublish) {
+    if (!canPublish || isViewer) {
       setError("Only the paper owner can publish.");
       return;
     }
@@ -414,7 +431,8 @@ export default function WritePage({ onOpenStory, session }) {
     setError("");
     try {
       let id = selectedId;
-      if (!readOnly && (!id || hasContent)) {
+      // Never auto-save for viewers — download the stored draft only.
+      if (!readOnly && !isViewer && (!id || hasContent)) {
         const payload = payloadFromEditor();
         if (!id) {
           const created = await api.createStory(payload);
@@ -440,132 +458,12 @@ export default function WritePage({ onOpenStory, session }) {
     }
   }
 
-  async function sendInvite() {
-    if (!selectedId || !isOwner) return;
-    const rid = inviteRid.trim();
-    if (!rid) {
-      setError("Enter a Researcher ID to invite.");
-      return;
-    }
-    setBusy(true);
-    setError("");
-    setMessage("");
-    try {
-      await api.lookupResearcher(rid);
-      await api.inviteStoryCollaborator(selectedId, {
-        researcher_id: rid,
-        role: inviteRole,
-      });
-      const story = await api.getStory(selectedId);
-      applyStory(story);
-      setInviteRid("");
-      setMessage(
-        `Invite sent as ${inviteRole}. They will see it under Shared with me after accepting.`
-      );
-      await refreshLists();
-    } catch (err) {
-      setError(err.message || "Could not send invite.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function revokeInvite(inviteId) {
-    if (!selectedId || !isOwner) return;
-    setBusy(true);
-    setError("");
-    try {
-      const story = await api.revokeStoryInvite(selectedId, inviteId);
-      applyStory(story);
-      setMessage("Invite revoked.");
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function changeCollabRole(userId, role) {
-    if (!selectedId || !isOwner) return;
-    setBusy(true);
-    setError("");
-    try {
-      const story = await api.updateStoryCollaboratorRole(selectedId, userId, role);
-      applyStory(story);
-      setMessage(`Updated role to ${role}.`);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function removeCollab(userId) {
-    if (!selectedId) return;
-    const leaving = userId === myUserId;
-    if (
-      !window.confirm(
-        leaving
-          ? "Leave this shared workspace?"
-          : "Remove this collaborator from the paper?"
-      )
-    ) {
-      return;
-    }
-    setBusy(true);
-    setError("");
-    try {
-      await api.removeStoryCollaborator(selectedId, userId);
-      if (leaving) {
-        resetEditor();
-        setMessage("You left the shared workspace.");
-        setTab("mine");
-      } else {
-        const story = await api.getStory(selectedId);
-        applyStory(story);
-        setMessage("Collaborator removed.");
-      }
-      await refreshLists();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function acceptPending(inviteId) {
-    setBusy(true);
-    setError("");
-    try {
-      const story = await api.acceptStoryInvite(inviteId);
-      applyStory(story);
-      setTab("mine");
-      setMessage("Joined shared workspace. You can edit or view based on your role.");
-      await refreshLists();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function declinePending(inviteId) {
-    setBusy(true);
-    setError("");
-    try {
-      await api.declineStoryInvite(inviteId);
-      setMessage("Invite declined.");
-      await refreshLists();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
   function setSectionValue(key, value) {
+    if (readOnly || isViewer) return;
     setSections((prev) => ({ ...prev, [key]: value }));
   }
+
+  const selectedInMine = mine.some((item) => item.story_id === selectedId);
 
   if (readerSlug) {
     return (
@@ -586,8 +484,8 @@ export default function WritePage({ onOpenStory, session }) {
         <div>
           <h2>Write</h2>
           <p>
-            Draft in IEEE research-paper structure, invite teammates to a shared workspace, then
-            download a Word (.docx) file or publish a public link.
+            Draft in IEEE research-paper structure, edit each section, then download a Word (.docx)
+            file or publish a public link. Invite teammates from Collaborators.
           </p>
         </div>
         <div className="write-tabs">
@@ -610,43 +508,6 @@ export default function WritePage({ onOpenStory, session }) {
 
       {error ? <StatusBanner tone="error">{error}</StatusBanner> : null}
       {message ? <StatusBanner tone="success">{message}</StatusBanner> : null}
-
-      {pendingInvites.length ? (
-        <div className="write-invite-inbox">
-          <h3>Paper invites</h3>
-          <ul>
-            {pendingInvites.map((inv) => (
-              <li key={inv.invite_id}>
-                <div>
-                  <strong>{inv.story_title || "Untitled paper"}</strong>
-                  <span className="muted">
-                    {" "}
-                    · {inv.invited_by_name || "Someone"} invited you as {inv.role}
-                  </span>
-                </div>
-                <div className="write-invite-actions">
-                  <button
-                    type="button"
-                    className="primary"
-                    disabled={busy}
-                    onClick={() => acceptPending(inv.invite_id)}
-                  >
-                    Accept
-                  </button>
-                  <button
-                    type="button"
-                    className="ghost"
-                    disabled={busy}
-                    onClick={() => declinePending(inv.invite_id)}
-                  >
-                    Decline
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
 
       {tab === "discover" ? (
         <div className="story-feed">
@@ -700,191 +561,106 @@ export default function WritePage({ onOpenStory, session }) {
             <button type="button" className="primary" disabled={busy} onClick={resetEditor}>
               New IEEE paper
             </button>
-
-            <div className="write-side-block">
-              <h3 className="write-side-heading">My papers</h3>
-              <ul className="write-story-list">
-                {mine.map((item) => (
-                  <li key={item.story_id}>
-                    <button
-                      type="button"
-                      className={`write-story-item${selectedId === item.story_id ? " active" : ""}`}
-                      onClick={() => loadStory(item.story_id)}
-                    >
-                      <strong>{item.title}</strong>
-                      <span className={`flag ${item.status === "published" ? "good" : ""}`}>
-                        {item.status}
-                        {item.format === "ieee" ? " · IEEE" : ""}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-              {!mine.length ? <p className="muted">No papers yet. Start a new IEEE draft.</p> : null}
-            </div>
-
-            <div className="write-side-block">
-              <h3 className="write-side-heading">Shared with me</h3>
-              <ul className="write-story-list write-shared-list">
-                {shared.map((item) => (
-                  <li key={item.story_id}>
-                    <button
-                      type="button"
-                      className={`write-story-item${selectedId === item.story_id ? " active" : ""}`}
-                      onClick={() => loadStory(item.story_id)}
-                    >
-                      <strong>{item.title}</strong>
-                      <span className="flag">
-                        {item.my_role || "viewer"}
-                        {item.author_name ? ` · ${item.author_name}` : ""}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-              {!shared.length ? (
-                <p className="muted">Accept an invite to join a shared editing workspace.</p>
+            <ul className="write-story-list">
+              {mine.map((item) => (
+                <li key={item.story_id}>
+                  <button
+                    type="button"
+                    className={`write-story-item${selectedId === item.story_id ? " active" : ""}`}
+                    onClick={() => loadStory(item.story_id)}
+                  >
+                    <strong>{item.title}</strong>
+                    <span className={`flag ${item.status === "published" ? "good" : ""}`}>
+                      {item.status}
+                      {item.format === "ieee" ? " · IEEE" : ""}
+                    </span>
+                  </button>
+                </li>
+              ))}
+              {selectedId && !selectedInMine ? (
+                <li>
+                  <button type="button" className="write-story-item active" disabled>
+                    <strong>{title || "Shared paper"}</strong>
+                    <span className="flag">{myRole} · shared</span>
+                  </button>
+                </li>
               ) : null}
-            </div>
-
-            {selectedId ? (
-              <div className="write-side-block write-collab-panel">
-                <h3 className="write-side-heading">Collaborators</h3>
-                <p className="muted write-collab-hint">
-                  {isOwner
-                    ? "Invite a teammate by Researcher ID — Editor can write sections; Viewer can only read."
-                    : "People on this shared workspace."}
-                </p>
-                <ul className="write-collab-list">
-                  <li className="write-collab-row">
-                    <div>
-                      <strong>You</strong>
-                      <span className="muted"> · {myRole}</span>
-                    </div>
-                    {!isOwner ? (
-                      <button
-                        type="button"
-                        className="ghost"
-                        disabled={busy}
-                        onClick={() => removeCollab(myUserId)}
-                      >
-                        Leave
-                      </button>
-                    ) : null}
-                  </li>
-                  {collaborators
-                    .filter((c) => c.user_id !== myUserId)
-                    .map((c) => (
-                      <li key={c.user_id} className="write-collab-row">
-                        <div>
-                          <strong>{c.name || c.researcher_id || "Collaborator"}</strong>
-                          <span className="muted">
-                            {" "}
-                            · {c.role}
-                            {c.researcher_id ? ` · ${c.researcher_id}` : ""}
-                          </span>
-                        </div>
-                        {isOwner ? (
-                          <div className="write-collab-actions">
-                            <select
-                              value={c.role}
-                              disabled={busy}
-                              onChange={(e) => changeCollabRole(c.user_id, e.target.value)}
-                              aria-label={`Role for ${c.name || c.researcher_id}`}
-                            >
-                              <option value="editor">Editor</option>
-                              <option value="viewer">Viewer</option>
-                            </select>
-                            <button
-                              type="button"
-                              className="ghost"
-                              disabled={busy}
-                              onClick={() => removeCollab(c.user_id)}
-                            >
-                              Remove
-                            </button>
-                          </div>
-                        ) : null}
-                      </li>
-                    ))}
-                </ul>
-
-                {isOwner ? (
-                  <div className="write-invite-form">
-                    <input
-                      value={inviteRid}
-                      onChange={(e) => setInviteRid(e.target.value.toUpperCase())}
-                      placeholder="Researcher ID"
-                      disabled={busy}
-                      aria-label="Collaborator Researcher ID"
-                    />
-                    <select
-                      value={inviteRole}
-                      onChange={(e) => setInviteRole(e.target.value)}
-                      disabled={busy}
-                      aria-label="Invite role"
-                    >
-                      <option value="editor">Editor</option>
-                      <option value="viewer">Viewer</option>
-                    </select>
-                    <button type="button" className="primary" disabled={busy} onClick={sendInvite}>
-                      Invite
-                    </button>
-                  </div>
-                ) : null}
-
-                {isOwner && pendingOnStory.length ? (
-                  <ul className="write-pending-invites">
-                    {pendingOnStory.map((inv) => (
-                      <li key={inv.invite_id} className="write-collab-row">
-                        <div>
-                          <strong>{inv.recipient_name || inv.recipient_researcher_id}</strong>
-                          <span className="muted"> · pending {inv.role}</span>
-                        </div>
-                        <button
-                          type="button"
-                          className="ghost"
-                          disabled={busy}
-                          onClick={() => revokeInvite(inv.invite_id)}
-                        >
-                          Revoke
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-              </div>
+            </ul>
+            {!mine.length && !(selectedId && !selectedInMine) ? (
+              <p className="muted">No papers yet. Start a new IEEE draft.</p>
             ) : null}
           </aside>
 
           <section className="write-editor ieee-editor">
             {selectedId && !isOwner ? (
-              <div className={`write-workspace-banner ${readOnly ? "view" : "edit"}`}>
-                Shared workspace · {readOnly ? "View only" : "You can edit"}
+              <div className={`write-workspace-banner ${readOnly || isViewer ? "view" : "edit"}`}>
+                {isViewer || readOnly
+                  ? "View only — you can read this paper, not edit or delete it."
+                  : "Shared workspace · You can edit"}
                 {authorUserId ? " · owner’s paper" : ""}
               </div>
             ) : null}
             <div className="ieee-badge">IEEE research paper format</div>
+
+            {isViewer || readOnly ? (
+              <>
+                <h1 className="write-title-input write-title-readonly">{title || "Untitled paper"}</h1>
+                {authorsLine ? <p className="ieee-affiliation">{authorsLine}</p> : null}
+                {affiliation ? <p className="muted">{affiliation}</p> : null}
+                <div className="write-toolbar">
+                  <span className="write-status-pill">
+                    {status} · viewer · read only
+                  </span>
+                </div>
+                <div
+                  className="story-prose write-preview ieee-preview"
+                  dangerouslySetInnerHTML={{
+                    __html: previewHtml || "<p class='muted'>No content yet.</p>",
+                  }}
+                />
+                <div className="write-actions">
+                  <button
+                    type="button"
+                    className="ghost"
+                    disabled={busy || !selectedId}
+                    onClick={downloadDocx}
+                  >
+                    Download .docx
+                  </button>
+                  {status === "published" && slug ? (
+                    <>
+                      <button type="button" className="ghost" onClick={copyLink}>
+                        Copy link
+                      </button>
+                      <p className="write-share-url" title={storyShareUrl(slug)}>
+                        {storyShareUrl(slug)}
+                      </p>
+                    </>
+                  ) : null}
+                </div>
+              </>
+            ) : (
+              <>
             <input
               className="write-title-input"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="Paper title"
-              disabled={busy || readOnly}
+              disabled={busy}
             />
             <input
               className="ieee-meta-input"
               value={authorsLine}
               onChange={(e) => setAuthorsLine(e.target.value)}
               placeholder="Author names (e.g. A. Researcher, B. Coauthor)"
-              disabled={busy || readOnly}
+              disabled={busy}
             />
             <input
               className="ieee-meta-input"
               value={affiliation}
               onChange={(e) => setAffiliation(e.target.value)}
               placeholder="Affiliation / institution"
-              disabled={busy || readOnly}
+              disabled={busy}
             />
 
             <div className="write-toolbar">
@@ -904,7 +680,7 @@ export default function WritePage({ onOpenStory, session }) {
               </button>
               <span className="write-status-pill">
                 {status}
-                {myRole !== "owner" ? ` · ${myRole}` : ""}
+                {myRole && myRole !== "owner" ? ` · ${myRole}` : ""}
               </span>
             </div>
 
@@ -948,7 +724,7 @@ export default function WritePage({ onOpenStory, session }) {
                         ? '[1] A. Author, “Title,” Journal, vol. x, no. y, pp. z–z, Year.'
                         : `Write the ${IEEE_SECTIONS.find(([k]) => k === activeSection)?.[1] || "section"}…`
                   }
-                  disabled={busy || readOnly}
+                  disabled={busy}
                   rows={14}
                 />
               </div>
@@ -958,7 +734,7 @@ export default function WritePage({ onOpenStory, session }) {
               <button
                 type="button"
                 className="primary"
-                disabled={busy || !dirty || readOnly}
+                disabled={busy || !dirty}
                 onClick={saveStory}
               >
                 {busy ? "Saving…" : "Save"}
@@ -1003,6 +779,8 @@ export default function WritePage({ onOpenStory, session }) {
                 </button>
               ) : null}
             </div>
+              </>
+            )}
           </section>
         </div>
       )}

@@ -130,6 +130,12 @@ class Story(BaseModel):
     published_at: str | None = None
 
 
+class StoryDetail(Story):
+    """Authenticated story payload including the caller's access role."""
+
+    my_role: StoryAccessRole | None = None
+
+
 class StoryCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     body_md: str = Field(default="", max_length=200_000)
