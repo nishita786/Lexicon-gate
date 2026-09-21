@@ -7,7 +7,7 @@ It will refuse when the sources cannot support a reliable answer. It does not fi
 ## What you get
 
 1. **Ask** — default home: question your library with one verification badge, citations, and evidence; **New Chat** starts a blank session; **Recents** in the sidebar reopen past Ask chats and paper searches.
-2. **Write** — draft freeform Markdown stories and **publish** them; anyone can read a public feed or open a shareable `#/s/{slug}` link (even when logged out).
+2. **Write** — draft **IEEE research-paper** sections (abstract through references), invite teammates by **Researcher ID** (editor or viewer) into a **shared workspace**, **download a Word (.docx)** file, or publish a public `#/s/{slug}` link.
 3. **Find papers** — quick search with filters (**All**, **Academic Papers**, **Research Websites**, **Open Access**) across Semantic Scholar, OpenAlex, arXiv, and optional [Tavily](https://tavily.com) web search (`SELFRAG_TAVILY_API_KEY`). Add open-access PDFs (or honest abstract/page fallbacks) to your library.
 4. **Library** — your sources (imported papers or uploaded files).
 5. **Compare** — side-by-side structure across papers in your library.

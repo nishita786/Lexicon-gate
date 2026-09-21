@@ -361,7 +361,7 @@ export default function App() {
               onClearScope={() => setAskScope(null)}
             />
           )}
-          {page === "write" && <WritePage />}
+          {page === "write" && <WritePage session={session} />}
           {page === "find" && (
             <FindPapers
               onImported={refresh}

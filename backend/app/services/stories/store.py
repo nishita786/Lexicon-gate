@@ -15,7 +15,16 @@ from pathlib import Path
 from typing import Iterator
 
 from ...config import BACKEND_ROOT
-from ...models.stories import Story, StoryListItem
+from ...models.stories import (
+    IEEE_SECTION_KEYS,
+    PendingStoryInvite,
+    Story,
+    StoryCollaborator,
+    StoryInvite,
+    StoryListItem,
+    assemble_ieee_body,
+    empty_ieee_sections,
+)
 
 _ROOT = BACKEND_ROOT / "data" / "stories"
 _LOCK = threading.RLock()
@@ -91,7 +100,35 @@ def make_excerpt(body_md: str) -> str:
     return text[:_EXCERPT_LEN].rsplit(" ", 1)[0].strip() + "…"
 
 
-def _to_list_item(story: Story) -> StoryListItem:
+def _normalize_sections(raw: dict[str, str] | None) -> dict[str, str]:
+    base = empty_ieee_sections()
+    if not raw:
+        return base
+    for key in IEEE_SECTION_KEYS:
+        if key in raw and raw[key] is not None:
+            base[key] = str(raw[key])
+    return base
+
+
+def _sync_body(story: Story) -> Story:
+    if story.format == "ieee":
+        story.body_md = assemble_ieee_body(
+            title=story.title,
+            authors_line=story.authors_line,
+            affiliation=story.affiliation,
+            sections=story.sections,
+        )
+    story.excerpt = make_excerpt(story.body_md)
+    return story
+
+
+def _has_writable_content(story: Story) -> bool:
+    if (story.body_md or "").strip():
+        return True
+    return any((story.sections or {}).get(k, "").strip() for k in IEEE_SECTION_KEYS)
+
+
+def _to_list_item(story: Story, *, my_role: str | None = None) -> StoryListItem:
     return StoryListItem(
         story_id=story.story_id,
         slug=story.slug,
@@ -101,10 +138,50 @@ def _to_list_item(story: Story) -> StoryListItem:
         author_name=story.author_name,
         author_researcher_id=story.author_researcher_id,
         status=story.status,
+        format=story.format,
+        my_role=my_role,  # type: ignore[arg-type]
         created_at=story.created_at,
         updated_at=story.updated_at,
         published_at=story.published_at,
     )
+
+
+def is_owner(story: Story, user_id: str) -> bool:
+    return bool(user_id) and story.author_user_id == user_id
+
+
+def collaborator_for(story: Story, user_id: str) -> StoryCollaborator | None:
+    uid = (user_id or "").strip()
+    if not uid:
+        return None
+    for collab in story.collaborators or []:
+        if collab.user_id == uid:
+            return collab
+    return None
+
+
+def access_role(story: Story, user_id: str) -> str | None:
+    if is_owner(story, user_id):
+        return "owner"
+    collab = collaborator_for(story, user_id)
+    return collab.role if collab else None
+
+
+def can_view(story: Story, user_id: str) -> bool:
+    return access_role(story, user_id) is not None
+
+
+def can_edit(story: Story, user_id: str) -> bool:
+    role = access_role(story, user_id)
+    return role in ("owner", "editor")
+
+
+def _ensure_lists(story: Story) -> Story:
+    if story.collaborators is None:
+        story.collaborators = []
+    if story.invites is None:
+        story.invites = []
+    return story
 
 
 def _load(story_id: str) -> Story | None:
@@ -112,7 +189,14 @@ def _load(story_id: str) -> Story | None:
     if not path.exists():
         return None
     data = json.loads(path.read_text(encoding="utf-8"))
-    return Story.model_validate(data)
+    story = Story.model_validate(data)
+    story.sections = _normalize_sections(story.sections)
+    _ensure_lists(story)
+    # Legacy freeform posts (pre-IEEE) keep their body.
+    if "format" not in data and (story.body_md or "").strip():
+        if not any((story.sections or {}).values()):
+            story.format = "freeform"
+    return story
 
 
 def _save(story: Story) -> Story:
@@ -129,7 +213,11 @@ def _all_stories() -> list[Story]:
         if path.name.startswith("."):
             continue
         try:
-            stories.append(Story.model_validate(json.loads(path.read_text(encoding="utf-8"))))
+            data = json.loads(path.read_text(encoding="utf-8"))
+            story = Story.model_validate(data)
+            story.sections = _normalize_sections(story.sections)
+            _ensure_lists(story)
+            stories.append(story)
         except Exception:
             continue
     return stories
@@ -153,28 +241,42 @@ def _unique_slug(base: str, *, exclude_id: str | None = None) -> str:
 def create_story(
     *,
     title: str,
-    body_md: str,
+    body_md: str = "",
     author_user_id: str,
     author_name: str = "",
     author_researcher_id: str = "",
+    format: str = "ieee",
+    authors_line: str = "",
+    affiliation: str = "",
+    sections: dict[str, str] | None = None,
 ) -> Story:
     with _store_lock():
         now = _utcnow_iso()
         story_id = uuid.uuid4().hex
+        fmt = format if format in ("ieee", "freeform") else "ieee"
         story = Story(
             story_id=story_id,
             slug=_unique_slug(title),
             title=title.strip(),
             body_md=body_md or "",
-            excerpt=make_excerpt(body_md or ""),
+            excerpt="",
             author_user_id=author_user_id,
             author_name=author_name or "",
             author_researcher_id=author_researcher_id or "",
             status="draft",
+            format=fmt,  # type: ignore[arg-type]
+            authors_line=(authors_line or "").strip(),
+            affiliation=(affiliation or "").strip(),
+            sections=_normalize_sections(sections),
             created_at=now,
             updated_at=now,
             published_at=None,
+            collaborators=[],
+            invites=[],
         )
+        if fmt == "ieee" and not (authors_line or "").strip() and author_name:
+            story.authors_line = author_name
+        _sync_body(story)
         return _save(story)
 
 
@@ -190,7 +292,23 @@ def list_mine(author_user_id: str) -> list[StoryListItem]:
     with _store_lock():
         mine = [s for s in _all_stories() if s.author_user_id == author_user_id]
         mine.sort(key=lambda s: s.updated_at, reverse=True)
-        return [_to_list_item(s) for s in mine]
+        return [_to_list_item(s, my_role="owner") for s in mine]
+
+
+def list_shared(user_id: str) -> list[StoryListItem]:
+    """Papers where the user is an accepted collaborator (not the owner)."""
+    with _store_lock():
+        uid = (user_id or "").strip()
+        shared: list[StoryListItem] = []
+        for story in _all_stories():
+            if story.author_user_id == uid:
+                continue
+            collab = collaborator_for(story, uid)
+            if collab is None:
+                continue
+            shared.append(_to_list_item(story, my_role=collab.role))
+        shared.sort(key=lambda s: s.updated_at, reverse=True)
+        return shared
 
 
 def list_public(*, limit: int = 50) -> list[StoryListItem]:
@@ -217,25 +335,36 @@ def get_public_by_slug(slug: str) -> Story | None:
 def update_story(
     story_id: str,
     *,
-    author_user_id: str,
+    actor_user_id: str,
     title: str | None = None,
     body_md: str | None = None,
+    format: str | None = None,
+    authors_line: str | None = None,
+    affiliation: str | None = None,
+    sections: dict[str, str] | None = None,
 ) -> Story:
     with _store_lock():
         story = _load(story_id)
         if story is None:
             raise LookupError("Story not found.")
-        if story.author_user_id != author_user_id:
-            raise PermissionError("Only the author can edit this story.")
+        if not can_edit(story, actor_user_id):
+            raise PermissionError("You do not have edit access to this paper.")
         if title is not None:
             story.title = title.strip()
-            # Keep slug stable after first publish; refresh when still draft.
-            if story.status == "draft":
+            if story.status == "draft" and is_owner(story, actor_user_id):
                 story.slug = _unique_slug(story.title, exclude_id=story.story_id)
-        if body_md is not None:
+        if format in ("ieee", "freeform") and is_owner(story, actor_user_id):
+            story.format = format  # type: ignore[assignment]
+        if authors_line is not None:
+            story.authors_line = authors_line.strip()
+        if affiliation is not None:
+            story.affiliation = affiliation.strip()
+        if sections is not None:
+            story.sections = _normalize_sections(sections)
+        if body_md is not None and story.format == "freeform":
             story.body_md = body_md
-            story.excerpt = make_excerpt(body_md)
         story.updated_at = _utcnow_iso()
+        _sync_body(story)
         return _save(story)
 
 
@@ -248,13 +377,13 @@ def publish_story(story_id: str, *, author_user_id: str) -> Story:
             raise PermissionError("Only the author can publish this story.")
         if not (story.title or "").strip():
             raise ValueError("Add a title before publishing.")
-        if not (story.body_md or "").strip():
+        _sync_body(story)
+        if not _has_writable_content(story):
             raise ValueError("Add some writing before publishing.")
         now = _utcnow_iso()
         story.status = "published"
         story.published_at = story.published_at or now
         story.updated_at = now
-        story.excerpt = make_excerpt(story.body_md)
         return _save(story)
 
 
@@ -280,3 +409,218 @@ def delete_story(story_id: str, *, author_user_id: str) -> None:
         path = _path_for(story_id)
         if path.exists():
             path.unlink()
+
+
+def create_invite(
+    story_id: str,
+    *,
+    owner_user_id: str,
+    owner_name: str = "",
+    recipient_user_id: str,
+    recipient_researcher_id: str = "",
+    recipient_name: str = "",
+    recipient_email: str = "",
+    role: str = "editor",
+) -> StoryInvite:
+    with _store_lock():
+        story = _load(story_id)
+        if story is None:
+            raise LookupError("Story not found.")
+        if not is_owner(story, owner_user_id):
+            raise PermissionError("Only the owner can invite collaborators.")
+        if role not in ("editor", "viewer"):
+            raise ValueError("Role must be editor or viewer.")
+        rid = (recipient_user_id or "").strip()
+        if not rid:
+            raise ValueError("Recipient user is required.")
+        if rid == owner_user_id:
+            raise ValueError("You cannot invite yourself.")
+        if collaborator_for(story, rid) is not None:
+            raise ValueError("That researcher is already a collaborator.")
+        for inv in story.invites or []:
+            if inv.status == "pending" and inv.recipient_user_id == rid:
+                raise ValueError("A pending invite already exists for that researcher.")
+        invite = StoryInvite(
+            invite_id=uuid.uuid4().hex,
+            recipient_user_id=rid,
+            recipient_researcher_id=(recipient_researcher_id or "").strip().upper(),
+            recipient_name=recipient_name or "",
+            recipient_email=(recipient_email or "").strip().lower(),
+            role=role,  # type: ignore[arg-type]
+            status="pending",
+            invited_by=owner_user_id,
+            invited_by_name=owner_name or "",
+            created_at=_utcnow_iso(),
+        )
+        story.invites = [invite, *(story.invites or [])]
+        story.updated_at = _utcnow_iso()
+        _save(story)
+        return invite
+
+
+def revoke_invite(story_id: str, invite_id: str, *, owner_user_id: str) -> Story:
+    with _store_lock():
+        story = _load(story_id)
+        if story is None:
+            raise LookupError("Story not found.")
+        if not is_owner(story, owner_user_id):
+            raise PermissionError("Only the owner can revoke invites.")
+        found = False
+        updated: list[StoryInvite] = []
+        for inv in story.invites or []:
+            if inv.invite_id == invite_id:
+                found = True
+                if inv.status == "pending":
+                    inv = inv.model_copy(update={"status": "revoked"})
+                updated.append(inv)
+            else:
+                updated.append(inv)
+        if not found:
+            raise LookupError("Invite not found.")
+        story.invites = updated
+        story.updated_at = _utcnow_iso()
+        return _save(story)
+
+
+def list_pending_invites_for_user(user_id: str) -> list[PendingStoryInvite]:
+    with _store_lock():
+        uid = (user_id or "").strip()
+        if not uid:
+            return []
+        pending: list[PendingStoryInvite] = []
+        for story in _all_stories():
+            for inv in story.invites or []:
+                if inv.status == "pending" and inv.recipient_user_id == uid:
+                    pending.append(
+                        PendingStoryInvite(
+                            invite_id=inv.invite_id,
+                            story_id=story.story_id,
+                            story_title=story.title,
+                            role=inv.role,
+                            invited_by=inv.invited_by,
+                            invited_by_name=inv.invited_by_name,
+                            created_at=inv.created_at,
+                        )
+                    )
+        pending.sort(key=lambda i: i.created_at, reverse=True)
+        return pending
+
+
+def accept_invite(invite_id: str, *, user_id: str, name: str = "", email: str = "", researcher_id: str = "") -> Story:
+    with _store_lock():
+        uid = (user_id or "").strip()
+        needle = (invite_id or "").strip()
+        if not needle:
+            raise LookupError("Invite not found.")
+        for story in _all_stories():
+            for inv in story.invites or []:
+                if inv.invite_id != needle:
+                    continue
+                if inv.status != "pending":
+                    raise ValueError("This invite is no longer pending.")
+                if inv.recipient_user_id != uid:
+                    raise PermissionError("This invite is for a different account.")
+                if collaborator_for(story, uid) is None:
+                    story.collaborators = [
+                        StoryCollaborator(
+                            user_id=uid,
+                            name=name or inv.recipient_name or "",
+                            email=email or inv.recipient_email or "",
+                            researcher_id=(researcher_id or inv.recipient_researcher_id or "").strip().upper(),
+                            role=inv.role,
+                            added_at=_utcnow_iso(),
+                        ),
+                        *(story.collaborators or []),
+                    ]
+                story.invites = [
+                    (
+                        i.model_copy(update={"status": "accepted"})
+                        if i.invite_id == needle
+                        else i
+                    )
+                    for i in (story.invites or [])
+                ]
+                story.updated_at = _utcnow_iso()
+                return _save(story)
+        raise LookupError("Invite not found.")
+
+
+def decline_invite(invite_id: str, *, user_id: str) -> None:
+    with _store_lock():
+        uid = (user_id or "").strip()
+        needle = (invite_id or "").strip()
+        if not needle:
+            raise LookupError("Invite not found.")
+        for story in _all_stories():
+            for inv in story.invites or []:
+                if inv.invite_id != needle:
+                    continue
+                if inv.status != "pending":
+                    raise ValueError("This invite is no longer pending.")
+                if inv.recipient_user_id != uid:
+                    raise PermissionError("This invite is for a different account.")
+                story.invites = [
+                    (
+                        i.model_copy(update={"status": "declined"})
+                        if i.invite_id == needle
+                        else i
+                    )
+                    for i in (story.invites or [])
+                ]
+                story.updated_at = _utcnow_iso()
+                _save(story)
+                return
+        raise LookupError("Invite not found.")
+
+
+def remove_collaborator(story_id: str, collaborator_user_id: str, *, actor_user_id: str) -> Story:
+    with _store_lock():
+        story = _load(story_id)
+        if story is None:
+            raise LookupError("Story not found.")
+        target = (collaborator_user_id or "").strip()
+        actor = (actor_user_id or "").strip()
+        if not target:
+            raise ValueError("Collaborator id is required.")
+        # Owner can remove anyone; collaborator can leave themselves.
+        if not is_owner(story, actor) and target != actor:
+            raise PermissionError("Only the owner can remove other collaborators.")
+        if is_owner(story, target):
+            raise ValueError("Cannot remove the paper owner.")
+        before = len(story.collaborators or [])
+        story.collaborators = [c for c in (story.collaborators or []) if c.user_id != target]
+        if len(story.collaborators) == before:
+            raise LookupError("Collaborator not found.")
+        story.updated_at = _utcnow_iso()
+        return _save(story)
+
+
+def update_collaborator_role(
+    story_id: str,
+    collaborator_user_id: str,
+    *,
+    owner_user_id: str,
+    role: str,
+) -> Story:
+    with _store_lock():
+        story = _load(story_id)
+        if story is None:
+            raise LookupError("Story not found.")
+        if not is_owner(story, owner_user_id):
+            raise PermissionError("Only the owner can change collaborator roles.")
+        if role not in ("editor", "viewer"):
+            raise ValueError("Role must be editor or viewer.")
+        target = (collaborator_user_id or "").strip()
+        found = False
+        updated: list[StoryCollaborator] = []
+        for collab in story.collaborators or []:
+            if collab.user_id == target:
+                found = True
+                updated.append(collab.model_copy(update={"role": role}))
+            else:
+                updated.append(collab)
+        if not found:
+            raise LookupError("Collaborator not found.")
+        story.collaborators = updated
+        story.updated_at = _utcnow_iso()
+        return _save(story)

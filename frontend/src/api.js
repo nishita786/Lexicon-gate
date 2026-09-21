@@ -380,6 +380,7 @@ export const api = {
       }
     ),
   listMyStories: () => request("/stories/mine"),
+  listSharedStories: () => request("/stories/shared"),
   listPublicStories: (limit = 40) => request(`/stories/public?limit=${limit}`),
   getPublicStory: (slug) => request(`/stories/public/${encodeURIComponent(slug)}`),
   getStory: (id) => request(`/stories/${encodeURIComponent(id)}`),
@@ -401,6 +402,74 @@ export const api = {
     request(`/stories/${encodeURIComponent(id)}/unpublish`, { method: "POST" }),
   deleteStory: (id) =>
     request(`/stories/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  listStoryInvitesPending: () => request("/stories/invites/pending"),
+  acceptStoryInvite: (inviteId) =>
+    request(`/stories/invites/${encodeURIComponent(inviteId)}/accept`, { method: "POST" }),
+  declineStoryInvite: (inviteId) =>
+    request(`/stories/invites/${encodeURIComponent(inviteId)}/decline`, { method: "POST" }),
+  inviteStoryCollaborator: (storyId, payload) =>
+    request(`/stories/${encodeURIComponent(storyId)}/invites`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  revokeStoryInvite: (storyId, inviteId) =>
+    request(
+      `/stories/${encodeURIComponent(storyId)}/invites/${encodeURIComponent(inviteId)}`,
+      { method: "DELETE" }
+    ),
+  updateStoryCollaboratorRole: (storyId, userId, role) =>
+    request(
+      `/stories/${encodeURIComponent(storyId)}/collaborators/${encodeURIComponent(userId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role }),
+      }
+    ),
+  removeStoryCollaborator: (storyId, userId) =>
+    request(
+      `/stories/${encodeURIComponent(storyId)}/collaborators/${encodeURIComponent(userId)}`,
+      { method: "DELETE" }
+    ),
+  downloadStoryDocx: async (id) => {
+    const response = await fetch(`${BASE}/stories/${encodeURIComponent(id)}/docx`, {
+      credentials: "include",
+    });
+    if (!response.ok) {
+      let detail = response.statusText;
+      try {
+        const body = await response.json();
+        detail = body.detail || detail;
+      } catch {
+        /* ignore */
+      }
+      throw new Error(typeof detail === "string" ? detail : "Download failed");
+    }
+    const blob = await response.blob();
+    const dispo = response.headers.get("Content-Disposition") || "";
+    const match = /filename="?([^";]+)"?/i.exec(dispo);
+    return { blob, filename: match?.[1] || "paper.docx" };
+  },
+  downloadPublicStoryDocx: async (slug) => {
+    const response = await fetch(`${BASE}/stories/public/${encodeURIComponent(slug)}/docx`, {
+      credentials: "include",
+    });
+    if (!response.ok) {
+      let detail = response.statusText;
+      try {
+        const body = await response.json();
+        detail = body.detail || detail;
+      } catch {
+        /* ignore */
+      }
+      throw new Error(typeof detail === "string" ? detail : "Download failed");
+    }
+    const blob = await response.blob();
+    const dispo = response.headers.get("Content-Disposition") || "";
+    const match = /filename="?([^";]+)"?/i.exec(dispo);
+    return { blob, filename: match?.[1] || "paper.docx" };
+  },
 };
 
 export function pct(value) {

@@ -43,12 +43,23 @@ def test_create_publish_public_unpublish(settings, monkeypatch, tmp_path):
 
     created = client.post(
         "/api/stories",
-        json={"title": "What is an LLM?", "body_md": "An **LLM** is a large language model."},
+        json={
+            "title": "What is an LLM?",
+            "format": "ieee",
+            "authors_line": "W. Writer",
+            "affiliation": "Lexicon Lab",
+            "sections": {
+                "abstract": "An LLM is a large language model.",
+                "introduction": "We study LLMs.",
+            },
+        },
     )
     assert created.status_code == 200, created.text
     story = created.json()
     assert story["status"] == "draft"
+    assert story["format"] == "ieee"
     assert story["slug"] == "what-is-an-llm"
+    assert "large language model" in story["body_md"]
     story_id = story["story_id"]
 
     mine = client.get("/api/stories/mine")
@@ -74,6 +85,17 @@ def test_create_publish_public_unpublish(settings, monkeypatch, tmp_path):
     assert by_slug.status_code == 200
     assert "large language model" in by_slug.json()["body_md"]
 
+    docx = anon.get("/api/stories/public/what-is-an-llm/docx")
+    assert docx.status_code == 200
+    assert docx.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+    assert docx.content[:2] == b"PK"
+
+    owner_docx = client.get(f"/api/stories/{story_id}/docx")
+    assert owner_docx.status_code == 200
+    assert owner_docx.content[:2] == b"PK"
+
     client.post(f"/api/stories/{story_id}/unpublish")
     assert anon.get("/api/stories/public").json()["total"] == 0
     assert anon.get("/api/stories/public/what-is-an-llm").status_code == 404
@@ -81,25 +103,32 @@ def test_create_publish_public_unpublish(settings, monkeypatch, tmp_path):
 
 def test_patch_and_slug_uniqueness(settings, monkeypatch, tmp_path):
     client = _auth_client(settings, monkeypatch, tmp_path, "a@example.com")
-    first = client.post("/api/stories", json={"title": "Same Title", "body_md": "One"}).json()
-    second = client.post("/api/stories", json={"title": "Same Title", "body_md": "Two"}).json()
+    first = client.post(
+        "/api/stories",
+        json={"title": "Same Title", "sections": {"abstract": "One"}},
+    ).json()
+    second = client.post(
+        "/api/stories",
+        json={"title": "Same Title", "sections": {"abstract": "Two"}},
+    ).json()
     assert first["slug"] == "same-title"
     assert second["slug"] == "same-title-2"
 
     patched = client.patch(
         f"/api/stories/{first['story_id']}",
-        json={"title": "Updated", "body_md": "New body"},
+        json={"title": "Updated", "sections": {"abstract": "New abstract", "introduction": "Hi"}},
     )
     assert patched.status_code == 200
     assert patched.json()["title"] == "Updated"
     assert patched.json()["slug"] == "updated"
+    assert "New abstract" in patched.json()["body_md"]
 
 
 def test_non_owner_cannot_edit(settings, monkeypatch, tmp_path):
     owner = _auth_client(settings, monkeypatch, tmp_path, "owner@example.com", "Owner")
     story_id = owner.post(
         "/api/stories",
-        json={"title": "Private draft", "body_md": "Secret notes"},
+        json={"title": "Private draft", "sections": {"abstract": "Secret notes"}},
     ).json()["story_id"]
 
     other = _second_client(settings, "other@example.com", "Other")
@@ -107,6 +136,7 @@ def test_non_owner_cannot_edit(settings, monkeypatch, tmp_path):
     assert other.patch(f"/api/stories/{story_id}", json={"title": "Hack"}).status_code == 403
     assert other.post(f"/api/stories/{story_id}/publish").status_code == 403
     assert other.delete(f"/api/stories/{story_id}").status_code == 403
+    assert other.get(f"/api/stories/{story_id}/docx").status_code == 403
 
 
 def test_mine_requires_auth(settings, monkeypatch, tmp_path):
@@ -125,7 +155,99 @@ def test_delete_story(settings, monkeypatch, tmp_path):
     client = _auth_client(settings, monkeypatch, tmp_path, "del@example.com")
     story_id = client.post(
         "/api/stories",
-        json={"title": "Temp", "body_md": "Gone soon"},
+        json={"title": "Temp", "sections": {"abstract": "Gone soon"}},
     ).json()["story_id"]
     assert client.delete(f"/api/stories/{story_id}").status_code == 204
     assert client.get(f"/api/stories/{story_id}").status_code == 404
+
+
+def _login_client(settings, email: str, name: str = "User") -> TestClient:
+    try:
+        create_user(settings, email, "secret-pass", name)
+    except ValueError:
+        pass
+    client = TestClient(create_app())
+    login = client.post("/api/auth/login", json={"email": email, "password": "secret-pass"})
+    assert login.status_code == 200, login.text
+    return client
+
+
+def test_story_collaborators_invite_edit_and_viewer(settings, monkeypatch, tmp_path):
+    owner = _auth_client(settings, monkeypatch, tmp_path, "paper.owner@example.com", "Owner")
+    guest = _login_client(settings, "paper.guest@example.com", "Guest")
+    viewer = _login_client(settings, "paper.viewer@example.com", "Viewer")
+
+    guest_rid = guest.get("/api/auth/me").json()["researcher_id"]
+    viewer_rid = viewer.get("/api/auth/me").json()["researcher_id"]
+
+    story = owner.post(
+        "/api/stories",
+        json={
+            "title": "Team Paper",
+            "sections": {"abstract": "Owner wrote the abstract."},
+        },
+    ).json()
+    story_id = story["story_id"]
+
+    invite = owner.post(
+        f"/api/stories/{story_id}/invites",
+        json={"researcher_id": guest_rid, "role": "editor"},
+    )
+    assert invite.status_code == 200, invite.text
+    invite_id = invite.json()["invite_id"]
+
+    pending = guest.get("/api/stories/invites/pending")
+    assert pending.status_code == 200
+    assert any(i["invite_id"] == invite_id for i in pending.json()["invites"])
+
+    # Owner should not see their own invite in pending inbox.
+    owner_pending = owner.get("/api/stories/invites/pending").json()
+    assert not any(i["invite_id"] == invite_id for i in owner_pending.get("invites") or [])
+
+    accepted = guest.post(f"/api/stories/invites/{invite_id}/accept")
+    assert accepted.status_code == 200, accepted.text
+    assert any(c["user_id"] for c in accepted.json()["collaborators"])
+
+    shared = guest.get("/api/stories/shared")
+    assert shared.status_code == 200
+    assert any(s["story_id"] == story_id and s["my_role"] == "editor" for s in shared.json()["stories"])
+
+    # Editor can read and edit sections, but not publish/delete.
+    assert guest.get(f"/api/stories/{story_id}").status_code == 200
+    patched = guest.patch(
+        f"/api/stories/{story_id}",
+        json={"sections": {"abstract": "Owner wrote the abstract.", "introduction": "Guest intro."}},
+    )
+    assert patched.status_code == 200, patched.text
+    assert "Guest intro" in patched.json()["body_md"]
+    assert guest.post(f"/api/stories/{story_id}/publish").status_code == 403
+    assert guest.delete(f"/api/stories/{story_id}").status_code == 403
+    assert guest.get(f"/api/stories/{story_id}/docx").status_code == 200
+
+    # Viewer invite + accept: can read, cannot edit.
+    v_invite = owner.post(
+        f"/api/stories/{story_id}/invites",
+        json={"researcher_id": viewer_rid, "role": "viewer"},
+    )
+    assert v_invite.status_code == 200
+    v_id = v_invite.json()["invite_id"]
+    assert viewer.post(f"/api/stories/invites/{v_id}/accept").status_code == 200
+    assert viewer.get(f"/api/stories/{story_id}").status_code == 200
+    assert (
+        viewer.patch(
+            f"/api/stories/{story_id}",
+            json={"sections": {"abstract": "Hacked"}},
+        ).status_code
+        == 403
+    )
+
+    # Decline path
+    stranger = _login_client(settings, "paper.stranger@example.com", "Stranger")
+    stranger_rid = stranger.get("/api/auth/me").json()["researcher_id"]
+    d_invite = owner.post(
+        f"/api/stories/{story_id}/invites",
+        json={"researcher_id": stranger_rid, "role": "editor"},
+    ).json()
+    assert stranger.post(f"/api/stories/invites/{d_invite['invite_id']}/decline").status_code == 204
+    assert stranger.get("/api/stories/shared").json()["total"] == 0
+    assert stranger.post(f"/api/stories/invites/{d_invite['invite_id']}/accept").status_code == 400

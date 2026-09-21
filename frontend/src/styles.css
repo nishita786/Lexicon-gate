@@ -2700,6 +2700,116 @@ button.danger:hover:not(:disabled) {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.write-side-block {
+  display: grid;
+  gap: 8px;
+}
+.write-side-heading {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+.write-story-list.write-shared-list {
+  max-height: min(28vh, 220px);
+}
+.write-collab-panel {
+  padding-top: 8px;
+  border-top: 1px solid var(--glass-border);
+}
+.write-collab-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.write-collab-list,
+.write-pending-invites {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.write-collab-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+}
+.write-collab-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+.write-collab-actions select,
+.write-invite-form select {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.35);
+  color: inherit;
+}
+.write-invite-form {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+}
+.write-invite-form input {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.35);
+  color: inherit;
+}
+.write-invite-inbox {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.write-invite-inbox h3 {
+  margin: 0;
+  font-size: 15px;
+}
+.write-invite-inbox ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.write-invite-inbox li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.write-invite-actions {
+  display: flex;
+  gap: 8px;
+}
+.write-workspace-banner {
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--glass-border);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.write-workspace-banner.view {
+  background: color-mix(in srgb, var(--ink-muted) 12%, transparent);
+}
 .write-editor {
   display: grid;
   gap: 12px;
@@ -2769,6 +2879,75 @@ button.danger:hover:not(:disabled) {
   user-select: all;
   cursor: text;
 }
+
+.ieee-badge {
+  display: inline-flex;
+  align-self: start;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.1);
+}
+.ieee-meta-input {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--glass-border);
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  padding: 8px 0;
+  outline: none;
+}
+.ieee-section-editor {
+  display: grid;
+  gap: 10px;
+}
+.ieee-section-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ieee-section-tab {
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--ink-muted);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ieee-section-tab.has-text {
+  color: var(--ink);
+}
+.ieee-section-tab.active {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--ink);
+}
+.ieee-section-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.ieee-section-body {
+  min-height: 280px;
+}
+.ieee-affiliation {
+  margin: 0 0 8px;
+  font-style: italic;
+  color: var(--ink-muted);
+  font-size: 14px;
+}
+.ieee-preview {
+  font-family: "Times New Roman", Times, serif;
+}
+
 .story-feed {
   display: grid;
   gap: 12px;
