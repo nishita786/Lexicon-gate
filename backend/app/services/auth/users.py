@@ -84,7 +84,12 @@ def _assigned_ids(users: list[dict[str, Any]]) -> set[str]:
 
 
 def ensure_researcher_id(settings: Settings, user: dict[str, Any]) -> dict[str, Any]:
-    """Lazy-assign a stable Researcher ID if missing. Persists to disk."""
+    """Lazy-assign a stable Researcher ID if missing. Persists to disk or Supabase."""
+    from ..supabase import users as sb_users
+
+    if sb_users.enabled():
+        return sb_users.ensure_researcher_id(user, normalise_researcher_id)
+
     current = str(user.get("researcher_id") or "").strip()
     if current:
         try:
@@ -117,6 +122,10 @@ def ensure_researcher_id(settings: Settings, user: dict[str, Any]) -> dict[str, 
 
 
 def find_by_email(settings: Settings, email: str) -> dict[str, Any] | None:
+    from ..supabase import users as sb_users
+
+    if sb_users.enabled():
+        return sb_users.find_by_email(email)
     wanted = normalise_email(email)
     with _lock:
         for user in _load(users_path(settings)):
@@ -126,6 +135,10 @@ def find_by_email(settings: Settings, email: str) -> dict[str, Any] | None:
 
 
 def find_by_user_id(settings: Settings, user_id: str) -> dict[str, Any] | None:
+    from ..supabase import users as sb_users
+
+    if sb_users.enabled():
+        return sb_users.find_by_user_id(user_id)
     uid = str(user_id or "").strip()
     if not uid:
         return None
@@ -137,10 +150,14 @@ def find_by_user_id(settings: Settings, user_id: str) -> dict[str, Any] | None:
 
 
 def find_by_researcher_id(settings: Settings, researcher_id: str) -> dict[str, Any] | None:
+    from ..supabase import users as sb_users
+
     try:
         wanted = normalise_researcher_id(researcher_id)
     except ValueError:
         return None
+    if sb_users.enabled():
+        return sb_users.find_by_researcher_id(wanted)
     with _lock:
         users = _load(users_path(settings))
         for user in users:
@@ -151,6 +168,11 @@ def find_by_researcher_id(settings: Settings, researcher_id: str) -> dict[str, A
 
 
 def create_user(settings: Settings, email: str, password: str, name: str = "") -> dict[str, Any]:
+    from ..supabase import users as sb_users
+
+    if sb_users.enabled():
+        return sb_users.create_user(email, hash_password(password), name=name)
+
     path = users_path(settings)
     with _lock:
         users = _load(path)
@@ -182,6 +204,10 @@ def authenticate(settings: Settings, email: str, password: str) -> dict[str, Any
 
 
 def find_by_google_sub(settings: Settings, google_sub: str) -> dict[str, Any] | None:
+    from ..supabase import users as sb_users
+
+    if sb_users.enabled():
+        return sb_users.find_by_google_sub(google_sub)
     sub = str(google_sub or "").strip()
     if not sub:
         return None
@@ -200,6 +226,8 @@ def upsert_google_user(
     name: str = "",
 ) -> dict[str, Any]:
     """Create or link a user authenticated via Google."""
+    from ..supabase import users as sb_users
+
     sub = str(google_sub or "").strip()
     email_n = normalise_email(email)
     if not sub:
@@ -207,6 +235,9 @@ def upsert_google_user(
     if not valid_email(email_n):
         raise ValueError("invalid_email")
     display = (name or "").strip()[:80]
+
+    if sb_users.enabled():
+        return sb_users.upsert_google_user(google_sub=sub, email=email_n, name=display)
 
     path = users_path(settings)
     with _lock:

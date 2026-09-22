@@ -185,6 +185,20 @@ def _ensure_lists(story: Story) -> Story:
 
 
 def _load(story_id: str) -> Story | None:
+    from ..supabase import stories as sb_stories
+
+    if sb_stories.enabled():
+        data = sb_stories.load_story_payload(story_id)
+        if data is None:
+            return None
+        story = Story.model_validate(data)
+        story.sections = _normalize_sections(story.sections)
+        _ensure_lists(story)
+        if "format" not in data and (story.body_md or "").strip():
+            if not any((story.sections or {}).values()):
+                story.format = "freeform"
+        return story
+
     path = _path_for(story_id)
     if not path.exists():
         return None
@@ -200,6 +214,13 @@ def _load(story_id: str) -> Story | None:
 
 
 def _save(story: Story) -> Story:
+    from ..supabase import stories as sb_stories
+
+    if sb_stories.enabled():
+        payload = json.loads(story.model_dump_json())
+        sb_stories.save_story_payload(story.story_id, story.author_user_id, payload)
+        return story
+
     path = _path_for(story.story_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(story.model_dump_json(indent=2), encoding="utf-8")
@@ -207,8 +228,22 @@ def _save(story: Story) -> Story:
 
 
 def _all_stories() -> list[Story]:
+    from ..supabase import stories as sb_stories
+
+    if sb_stories.enabled():
+        stories: list[Story] = []
+        for data in sb_stories.list_story_payloads():
+            try:
+                story = Story.model_validate(data)
+                story.sections = _normalize_sections(story.sections)
+                _ensure_lists(story)
+                stories.append(story)
+            except Exception:
+                continue
+        return stories
+
     _ROOT.mkdir(parents=True, exist_ok=True)
-    stories: list[Story] = []
+    stories = []
     for path in _ROOT.glob("*.json"):
         if path.name.startswith("."):
             continue
@@ -400,12 +435,17 @@ def unpublish_story(story_id: str, *, author_user_id: str) -> Story:
 
 
 def delete_story(story_id: str, *, author_user_id: str) -> None:
+    from ..supabase import stories as sb_stories
+
     with _store_lock():
         story = _load(story_id)
         if story is None:
             raise LookupError("Story not found.")
         if story.author_user_id != author_user_id:
             raise PermissionError("Only the author can delete this story.")
+        if sb_stories.enabled():
+            sb_stories.delete_story(story_id)
+            return
         path = _path_for(story_id)
         if path.exists():
             path.unlink()

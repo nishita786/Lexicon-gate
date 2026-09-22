@@ -163,6 +163,10 @@ def public_config() -> dict[str, Any]:
         "embedding_provider": get_embedding_provider().describe(),
         "server_tts": server_tts_available(),
         "google_client_id": (settings.google_client_id or "").strip(),
+        "supabase_configured": bool(
+            (settings.supabase_url or "").strip()
+            and (settings.supabase_service_key or "").strip()
+        ),
     }
 
 

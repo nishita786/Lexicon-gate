@@ -48,6 +48,11 @@ def _persist() -> None:
 
 
 def create_session(user: dict[str, Any], ttl_seconds: int) -> str:
+    from ..supabase import sessions as sb_sessions
+
+    if sb_sessions.enabled():
+        return sb_sessions.create_session(user, ttl_seconds)
+
     token = secrets.token_urlsafe(32)
     expires = time.time() + max(60, int(ttl_seconds))
     with _lock:
@@ -64,6 +69,11 @@ def create_session(user: dict[str, Any], ttl_seconds: int) -> str:
 
 
 def get_session(token: str | None) -> dict[str, Any] | None:
+    from ..supabase import sessions as sb_sessions
+
+    if sb_sessions.enabled():
+        return sb_sessions.get_session(token)
+
     if not token:
         return None
     now = time.time()
@@ -80,6 +90,12 @@ def get_session(token: str | None) -> dict[str, Any] | None:
 
 
 def revoke_session(token: str | None) -> None:
+    from ..supabase import sessions as sb_sessions
+
+    if sb_sessions.enabled():
+        sb_sessions.revoke_session(token)
+        return
+
     if not token:
         return
     with _lock:
@@ -90,6 +106,12 @@ def revoke_session(token: str | None) -> None:
 
 
 def clear_sessions() -> None:
+    from ..supabase import sessions as sb_sessions
+
+    if sb_sessions.enabled():
+        sb_sessions.clear_sessions()
+        return
+
     global _loaded_from
     with _lock:
         _sessions.clear()

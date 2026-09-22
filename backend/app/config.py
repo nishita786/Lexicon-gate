@@ -150,6 +150,12 @@ class Settings(BaseSettings):
     session_ttl_seconds: int = 60 * 60 * 24 * 7
     google_client_id: str = ""
 
+    # ------------------------------------------------------------ supabase
+    # Optional Postgres via Supabase PostgREST. When both are set, auth users,
+    # sessions, and Write stories use the remote DB; otherwise local JSON.
+    supabase_url: str = ""
+    supabase_service_key: str = ""
+
     # ---------------------------------------------------------- paper search
     semantic_scholar_api_key: str | None = None
     tavily_api_key: str | None = None
