@@ -98,3 +98,65 @@ def test_invalid_email_rejected(auth_client: TestClient):
         json={"email": "not-an-email", "password": "secret-pass"},
     )
     assert response.status_code == 400
+
+
+def test_google_auth_creates_session(auth_client: TestClient, monkeypatch):
+    from app.api import auth as auth_api
+    from app.config import get_settings
+
+    monkeypatch.setenv("SELFRAG_GOOGLE_CLIENT_ID", "test-client.apps.googleusercontent.com")
+    get_settings.cache_clear()
+    monkeypatch.setattr(
+        auth_api,
+        "verify_google_id_token",
+        lambda credential, client_id, timeout=12.0: {
+            "google_sub": "google-sub-1",
+            "email": "scholar@gmail.com",
+            "name": "Scholar",
+        },
+    )
+    response = auth_client.post("/api/auth/google", json={"credential": "fake.jwt.token.value"})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["email"] == "scholar@gmail.com"
+    assert body["name"] == "Scholar"
+    assert body["researcher_id"].startswith("LG-")
+    assert "selfrag_session" in response.cookies
+    me = auth_client.get("/api/auth/me")
+    assert me.status_code == 200
+    assert me.json()["email"] == "scholar@gmail.com"
+
+
+def test_google_auth_links_existing_email(auth_client: TestClient, monkeypatch):
+    from app.api import auth as auth_api
+    from app.config import get_settings
+
+    monkeypatch.setenv("SELFRAG_GOOGLE_CLIENT_ID", "test-client.apps.googleusercontent.com")
+    get_settings.cache_clear()
+    auth_client.post(
+        "/api/auth/signup",
+        json={"email": "linked@example.com", "password": "secret-pass", "name": "Linked"},
+    )
+    auth_client.post("/api/auth/logout")
+    monkeypatch.setattr(
+        auth_api,
+        "verify_google_id_token",
+        lambda credential, client_id, timeout=12.0: {
+            "google_sub": "google-sub-linked",
+            "email": "linked@example.com",
+            "name": "Linked Google",
+        },
+    )
+    response = auth_client.post("/api/auth/google", json={"credential": "fake.jwt.token.value"})
+    assert response.status_code == 200, response.text
+    assert response.json()["email"] == "linked@example.com"
+    assert response.json()["name"] == "Linked"
+
+
+def test_google_auth_requires_config(auth_client: TestClient, monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setenv("SELFRAG_GOOGLE_CLIENT_ID", "")
+    get_settings.cache_clear()
+    response = auth_client.post("/api/auth/google", json={"credential": "fake.jwt.token.value"})
+    assert response.status_code == 503

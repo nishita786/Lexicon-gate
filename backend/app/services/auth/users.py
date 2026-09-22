@@ -173,9 +173,79 @@ def authenticate(settings: Settings, email: str, password: str) -> dict[str, Any
     user = find_by_email(settings, email)
     if user is None:
         return None
-    if not verify_password(password, str(user.get("password_hash", ""))):
+    stored = str(user.get("password_hash") or "")
+    if not stored:
+        return None
+    if not verify_password(password, stored):
         return None
     return ensure_researcher_id(settings, user)
+
+
+def find_by_google_sub(settings: Settings, google_sub: str) -> dict[str, Any] | None:
+    sub = str(google_sub or "").strip()
+    if not sub:
+        return None
+    with _lock:
+        for user in _load(users_path(settings)):
+            if str(user.get("google_sub") or "") == sub:
+                return user
+    return None
+
+
+def upsert_google_user(
+    settings: Settings,
+    *,
+    google_sub: str,
+    email: str,
+    name: str = "",
+) -> dict[str, Any]:
+    """Create or link a user authenticated via Google."""
+    sub = str(google_sub or "").strip()
+    email_n = normalise_email(email)
+    if not sub:
+        raise ValueError("missing_google_sub")
+    if not valid_email(email_n):
+        raise ValueError("invalid_email")
+    display = (name or "").strip()[:80]
+
+    path = users_path(settings)
+    with _lock:
+        users = _load(path)
+        for idx, row in enumerate(users):
+            if str(row.get("google_sub") or "") == sub:
+                if display and not str(row.get("name") or "").strip():
+                    row["name"] = display
+                if email_n and normalise_email(str(row.get("email") or "")) != email_n:
+                    # Keep original email if already set; still ensure google_sub link.
+                    pass
+                users[idx] = row
+                _save(path, users)
+                return dict(row)
+
+        for idx, row in enumerate(users):
+            if normalise_email(str(row.get("email") or "")) != email_n:
+                continue
+            row["google_sub"] = sub
+            if display and not str(row.get("name") or "").strip():
+                row["name"] = display
+            if not str(row.get("auth_provider") or "").strip():
+                row["auth_provider"] = "google" if not str(row.get("password_hash") or "") else "linked"
+            users[idx] = row
+            _save(path, users)
+            return dict(row)
+
+        record = {
+            "user_id": uuid.uuid4().hex,
+            "email": email_n,
+            "name": display,
+            "password_hash": "",
+            "google_sub": sub,
+            "auth_provider": "google",
+            "researcher_id": _generate_researcher_id(_assigned_ids(users)),
+        }
+        users.append(record)
+        _save(path, users)
+        return dict(record)
 
 
 def public_user(user: dict[str, Any]) -> dict[str, str]:

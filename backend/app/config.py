@@ -148,6 +148,7 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------------- auth
     auth_required: bool = True
     session_ttl_seconds: int = 60 * 60 * 24 * 7
+    google_client_id: str = ""
 
     # ---------------------------------------------------------- paper search
     semantic_scholar_api_key: str | None = None

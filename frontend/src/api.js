@@ -45,6 +45,12 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
+  googleLogin: (payload) =>
+    request("/auth/google", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
   logout: () => request("/auth/logout", { method: "POST" }),
   health: () => request("/health"),
   config: () => request("/config"),

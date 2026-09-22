@@ -8,7 +8,8 @@ from collections import defaultdict, deque
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from ..config import get_settings
-from ..models.auth import LoginRequest, ResearcherPublic, SignupRequest, UserPublic
+from ..models.auth import GoogleAuthRequest, LoginRequest, ResearcherPublic, SignupRequest, UserPublic
+from ..services.auth.google import verify_google_id_token
 from ..services.auth.sessions import create_session, get_session, revoke_session
 from ..services.auth.users import (
     authenticate,
@@ -19,6 +20,7 @@ from ..services.auth.users import (
     normalise_researcher_id,
     public_user,
     researcher_public,
+    upsert_google_user,
     valid_email,
 )
 
@@ -89,6 +91,36 @@ def login(payload: LoginRequest, response: Response) -> UserPublic:
     user = authenticate(settings, payload.email, payload.password)
     if user is None:
         raise HTTPException(status_code=401, detail="Email or password is incorrect.")
+    token = create_session(user, settings.session_ttl_seconds)
+    _set_session_cookie(response, token, settings.session_ttl_seconds)
+    return UserPublic(**public_user(user))
+
+
+@router.post("/google", response_model=UserPublic)
+def google_auth(payload: GoogleAuthRequest, response: Response) -> UserPublic:
+    settings = get_settings()
+    client_id = (settings.google_client_id or "").strip()
+    if not client_id:
+        raise HTTPException(
+            status_code=503,
+            detail="Google sign-in is not configured. Set SELFRAG_GOOGLE_CLIENT_ID.",
+        )
+    try:
+        profile = verify_google_id_token(payload.credential, client_id)
+        user = upsert_google_user(
+            settings,
+            google_sub=profile["google_sub"],
+            email=profile["email"],
+            name=profile.get("name") or "",
+        )
+    except ValueError as exc:
+        reason = str(exc)
+        if reason == "google_not_configured":
+            raise HTTPException(status_code=503, detail="Google sign-in is not configured.") from exc
+        if reason == "google_unreachable":
+            raise HTTPException(status_code=502, detail="Could not reach Google to verify sign-in.") from exc
+        raise HTTPException(status_code=401, detail="Google sign-in failed. Try again.") from exc
+    user = ensure_researcher_id(settings, user)
     token = create_session(user, settings.session_ttl_seconds)
     _set_session_cookie(response, token, settings.session_ttl_seconds)
     return UserPublic(**public_user(user))

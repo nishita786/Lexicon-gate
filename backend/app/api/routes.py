@@ -162,6 +162,7 @@ def public_config() -> dict[str, Any]:
         "llm_provider": get_llm_provider().describe(),
         "embedding_provider": get_embedding_provider().describe(),
         "server_tts": server_tts_available(),
+        "google_client_id": (settings.google_client_id or "").strip(),
     }
 
 

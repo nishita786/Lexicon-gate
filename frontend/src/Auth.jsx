@@ -1,21 +1,46 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 
 const BEATS = [
-  { title: "Find papers", detail: "Search across your sources with intent, not keywords alone." },
-  { title: "Keep a library", detail: "Save what matters so evidence stays close to the work." },
-  { title: "Ask with citations", detail: "Get answers grounded in documents you can verify." },
+  { word: "Find", line: "Search the literature by intent." },
+  { word: "Library", line: "Keep every paper on your shelf." },
+  { word: "Cite", line: "Ask — and open the source behind it." },
 ];
 
 /** Brand hold → beats → unlock continue (ms). Skippable anytime. */
 const INTRO_TIMING = {
-  brandHold: 1800,
-  beatGap: 1600,
-  readyHold: 900,
+  brandHold: 1500,
+  beatGap: 1500,
+  readyHold: 450,
 };
+
+const GIS_SCRIPT = "https://accounts.google.com/gsi/client";
 
 function prefersReducedMotion() {
   return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+function loadGoogleScript() {
+  if (typeof document === "undefined") return Promise.resolve();
+  if (window.google?.accounts?.id) return Promise.resolve();
+  const existing = document.querySelector(`script[src="${GIS_SCRIPT}"]`);
+  if (existing) {
+    return new Promise((resolve, reject) => {
+      existing.addEventListener("load", () => resolve(), { once: true });
+      existing.addEventListener("error", () => reject(new Error("Google script failed to load.")), {
+        once: true,
+      });
+      if (window.google?.accounts?.id) resolve();
+    });
+  }
+  return new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = GIS_SCRIPT;
+    script.async = true;
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error("Google script failed to load."));
+    document.head.appendChild(script);
+  });
 }
 
 export function Logo({ size = "nav" }) {
@@ -47,14 +72,32 @@ export default function AuthScreen({ onSignedIn }) {
   const [beatIndex, setBeatIndex] = useState(reduced ? BEATS.length : -1);
   const [introReady, setIntroReady] = useState(Boolean(reduced));
   const [leaving, setLeaving] = useState(false);
+  const [googleClientId, setGoogleClientId] = useState("");
+  const googleBtnRef = useRef(null);
 
   const isSignup = mode === "signup";
+  const googleEnabled = Boolean(googleClientId) && !showIntro;
 
   function finishIntro() {
     if (leaving) return;
     setLeaving(true);
-    window.setTimeout(() => setShowIntro(false), reduced ? 0 : 420);
+    window.setTimeout(() => setShowIntro(false), reduced ? 0 : 520);
   }
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .config()
+      .then((cfg) => {
+        if (!cancelled) setGoogleClientId(String(cfg?.google_client_id || "").trim());
+      })
+      .catch(() => {
+        if (!cancelled) setGoogleClientId("");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!showIntro || reduced) return undefined;
@@ -63,9 +106,7 @@ export default function AuthScreen({ onSignedIn }) {
     let elapsed = INTRO_TIMING.brandHold;
 
     BEATS.forEach((_, index) => {
-      timers.push(
-        window.setTimeout(() => setBeatIndex(index), elapsed)
-      );
+      timers.push(window.setTimeout(() => setBeatIndex(index), elapsed));
       elapsed += INTRO_TIMING.beatGap;
     });
 
@@ -95,6 +136,59 @@ export default function AuthScreen({ onSignedIn }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [showIntro, introReady, leaving]);
 
+  useEffect(() => {
+    if (!googleEnabled || !googleBtnRef.current) return undefined;
+    let cancelled = false;
+
+    async function mountGoogle() {
+      try {
+        await loadGoogleScript();
+        if (cancelled || !window.google?.accounts?.id || !googleBtnRef.current) return;
+
+        window.google.accounts.id.initialize({
+          client_id: googleClientId,
+          callback: async (response) => {
+            if (!response?.credential) {
+              setError("Google sign-in was cancelled.");
+              return;
+            }
+            setBusy(true);
+            setError("");
+            try {
+              await api.googleLogin({ credential: response.credential });
+              const confirmed = await api.me();
+              onSignedIn(confirmed);
+            } catch (err) {
+              setError(err.message || "Google sign-in failed.");
+            } finally {
+              setBusy(false);
+            }
+          },
+          auto_select: false,
+          cancel_on_tap_outside: true,
+        });
+
+        googleBtnRef.current.innerHTML = "";
+        window.google.accounts.id.renderButton(googleBtnRef.current, {
+          type: "standard",
+          theme: "outline",
+          size: "large",
+          text: isSignup ? "signup_with" : "continue_with",
+          shape: "pill",
+          width: Math.min(340, googleBtnRef.current.clientWidth || 320),
+          logo_alignment: "left",
+        });
+      } catch {
+        if (!cancelled) setGoogleClientId("");
+      }
+    }
+
+    mountGoogle();
+    return () => {
+      cancelled = true;
+    };
+  }, [googleEnabled, googleClientId, isSignup, onSignedIn]);
+
   async function submit(event) {
     event.preventDefault();
     setError("");
@@ -116,62 +210,75 @@ export default function AuthScreen({ onSignedIn }) {
     }
   }
 
+  const pathProgress = introReady
+    ? 1
+    : Math.max(0, Math.min(1, (beatIndex + 1) / BEATS.length));
   const activeBeat = beatIndex >= 0 && beatIndex < BEATS.length ? BEATS[beatIndex] : null;
-  const progress = Math.min(1, Math.max(0, (beatIndex + 1) / (BEATS.length + 1)));
+  const lineText = activeBeat
+    ? activeBeat.line
+    : introReady
+      ? "Step through — your desk is waiting."
+      : "\u00a0";
 
   return (
     <div className="auth-screen">
       <div className="auth-orbs" aria-hidden="true">
         <span className="shape shape-sphere shape-a is-near" />
         <span className="shape shape-torus shape-c is-mid" />
-        <span className="shape shape-sphere shape-b is-far" />
-        <span className="shape shape-torus shape-d is-far" />
+        <span className="shape shape-sphere shape-b is-mid" />
+        <span className="shape shape-torus shape-d is-near" />
         <span className="shape shape-sphere shape-e is-near" />
+        <span className="shape shape-torus shape-intro-ring" />
       </div>
       {showIntro && (
         <div
-          className={`intro-stage${reduced ? " is-reduced" : ""}${leaving ? " is-leaving" : ""}${introReady ? " is-ready" : ""}`}
+          className={`intro-stage${reduced ? " is-reduced" : ""}${leaving ? " is-leaving" : ""}${introReady ? " is-ready" : ""}${beatIndex === 2 ? " is-cite" : ""}`}
           role="dialog"
           aria-label="Welcome to Lexicon Gate"
           aria-live="polite"
         >
-          <div className="intro-brand">
-            <Logo size="hero" />
-            <p className="intro-kicker">Evidence-first research</p>
-            <p className="intro-tagline">Question, evidence, verified answer.</p>
+          <Logo size="hero" />
+          <h1 className="intro-headline">
+            Where research
+            <span className="intro-headline-line">keeps its sources</span>
+          </h1>
+
+          <div className="intro-path" aria-hidden="true">
+            <span
+              className="intro-path-fill"
+              style={{ transform: `scaleX(${pathProgress})` }}
+            />
+            <ol className="intro-path-nodes">
+              {BEATS.map((beat, index) => {
+                const state =
+                  beatIndex > index || introReady
+                    ? "is-done"
+                    : beatIndex === index
+                      ? "is-active"
+                      : "";
+                return (
+                  <li key={beat.word} className={`intro-path-node ${state}`}>
+                    <span className="intro-path-dot" />
+                    <span className="intro-path-label">{beat.word}</span>
+                  </li>
+                );
+              })}
+            </ol>
           </div>
 
-          <div className="intro-story">
-            {activeBeat ? (
-              <div key={activeBeat.title} className="intro-beat-card">
-                <p className="intro-beat-title">{activeBeat.title}</p>
-                <p className="intro-beat-detail">{activeBeat.detail}</p>
-              </div>
-            ) : introReady ? (
-              <div className="intro-beat-card is-finale">
-                <p className="intro-beat-title">Ready when you are</p>
-                <p className="intro-beat-detail">Create an account or log in to open your library.</p>
-              </div>
-            ) : (
-              <div className="intro-beat-card is-placeholder" aria-hidden="true">
-                <p className="intro-beat-title">&nbsp;</p>
-                <p className="intro-beat-detail">&nbsp;</p>
-              </div>
-            )}
-          </div>
-
-          <div className="intro-progress" aria-hidden="true">
-            <span className="intro-progress-bar" style={{ transform: `scaleX(${progress})` }} />
-          </div>
+          <p className="intro-line" key={activeBeat?.word || (introReady ? "ready" : "wait")}>
+            {lineText}
+          </p>
 
           <div className="intro-actions">
             {introReady ? (
               <button type="button" className="primary intro-continue" onClick={finishIntro}>
-                Enter Lexicon Gate
+                <span>Enter the gate</span>
+                <span className="intro-continue-arrow" aria-hidden="true" />
               </button>
             ) : (
               <button type="button" className="ghost intro-skip" onClick={finishIntro}>
-                Skip intro
+                Skip
               </button>
             )}
           </div>
@@ -185,6 +292,20 @@ export default function AuthScreen({ onSignedIn }) {
         <p className="muted auth-lead">
           {isSignup ? "Create an account to use your library." : "Log in to continue."}
         </p>
+
+        {googleClientId ? (
+          <div className="auth-google-block">
+            <div
+              ref={googleBtnRef}
+              className="auth-google-btn"
+              aria-label={isSignup ? "Sign up with Google" : "Continue with Google"}
+            />
+            <div className="auth-divider" role="presentation">
+              <span>or</span>
+            </div>
+          </div>
+        ) : null}
+
         <form className="auth-form" onSubmit={submit}>
           <div className={`fold ${isSignup ? "open" : ""}`}>
             <div className="fold-inner">

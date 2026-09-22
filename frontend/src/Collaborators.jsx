@@ -221,6 +221,9 @@ export default function CollaboratorsPage({ session, onOpenPaper, onNavigate }) 
         <span className="collab-orb collab-orb-back-b" />
         <span className="collab-ring collab-ring-back" />
         <span className="collab-orb collab-orb-mid" />
+        <span className="collab-orb collab-orb-fore-a" />
+        <span className="collab-ring collab-ring-fore" />
+        <span className="collab-orb collab-orb-fore-b" />
       </div>
 
       <div className="collab-panel">
@@ -249,7 +252,7 @@ export default function CollaboratorsPage({ session, onOpenPaper, onNavigate }) 
           </div>
         )}
 
-        <div className={`collab-panel-body${showWorkspace ? " has-workspace" : ""}`}>
+        <div className={`collab-panel-body${showWorkspace ? " has-workspace" : " is-home"}`}>
           {showWorkspace ? (
             <div className="collab-workspace">
               {section === "shared" ? (
@@ -471,31 +474,31 @@ export default function CollaboratorsPage({ session, onOpenPaper, onNavigate }) 
                 </div>
               ) : null}
             </div>
-          ) : null}
-
-          <div className="collab-hero-anchor">
-            <p className="collab-hero-sub">Shared workspace</p>
-            <h2 className="collab-hero-title">Collaborators</h2>
-            <p className="collab-hero-copy">
-              Invite teammates by Researcher ID. Editors co-write IEEE sections with you. Viewers
-              only read — nothing more.
-            </p>
-            <button
-              type="button"
-              className="collab-cta-outline"
-              disabled={!myRid || busy}
-              onClick={copyRid}
-            >
-              {copied ? "Copied" : "Copy your ID"}
-            </button>
-          </div>
+          ) : (
+            <div className="collab-hero-anchor">
+              <p className="collab-hero-sub">Shared workspace</p>
+              <h2 className="collab-hero-title">Collaborators</h2>
+              <p className="collab-hero-copy">
+                Invite teammates by Researcher ID. Editors co-write IEEE sections with you. Viewers
+                only read — nothing more.
+              </p>
+              {myRid ? (
+                <p className="collab-hero-rid">
+                  <span>Your ID</span>
+                  <code>{myRid}</code>
+                </p>
+              ) : null}
+              <button
+                type="button"
+                className="collab-cta-outline"
+                disabled={!myRid || busy}
+                onClick={copyRid}
+              >
+                {copied ? "Copied" : "Copy your ID"}
+              </button>
+            </div>
+          )}
         </div>
-      </div>
-
-      <div className="collab-fore" aria-hidden="true">
-        <span className="collab-orb collab-orb-fore-a" />
-        <span className="collab-ring collab-ring-fore" />
-        <span className="collab-orb collab-orb-fore-b" />
       </div>
     </div>
   );
