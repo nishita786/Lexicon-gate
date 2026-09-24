@@ -174,7 +174,7 @@ export function buildStoryHtmlDocument({
   <title>${safeTitle}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
   <style>
     :root {
       --ink: #14201a;
@@ -182,12 +182,13 @@ export function buildStoryHtmlDocument({
       --paper: #f4f7f4;
       --accent: #1f6b4a;
       --rule: rgba(20, 32, 26, 0.12);
+      --font: "Outfit", "Segoe UI", system-ui, sans-serif;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       min-height: 100vh;
-      font-family: "Outfit", system-ui, sans-serif;
+      font-family: var(--font);
       color: var(--ink);
       background:
         radial-gradient(1200px 600px at 10% -10%, rgba(31, 107, 74, 0.12), transparent 55%),
@@ -208,7 +209,7 @@ export function buildStoryHtmlDocument({
       margin-bottom: 28px;
     }
     h1 {
-      font-family: "Fraunces", Georgia, serif;
+      font-family: var(--font);
       font-weight: 600;
       font-size: clamp(2rem, 5vw, 2.75rem);
       line-height: 1.15;
@@ -226,9 +227,9 @@ export function buildStoryHtmlDocument({
       margin: 0 0 28px;
       border: 0;
     }
-    article { font-size: 1.08rem; }
+    article { font-size: 1.08rem; font-family: var(--font); }
     article h1, article h2, article h3 {
-      font-family: "Fraunces", Georgia, serif;
+      font-family: var(--font);
       line-height: 1.25;
       margin: 1.5em 0 0.5em;
     }

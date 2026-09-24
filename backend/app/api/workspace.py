@@ -114,9 +114,28 @@ def get_paper_search(search_id: str, request: Request) -> PaperSearchRecord:
 def delete_ask_recent(chat_id: str, request: Request) -> None:
     user = _require_user(request)
     user_id = str(user["user_id"])
-    chat_deleted = ask_chats.delete_chat(user_id, chat_id)
-    mem_deleted = history.delete(chat_id)
-    query_deleted = ask_queries.delete_ask_query(user_id, chat_id)
+    cid = str(chat_id or "").strip()
+    if not cid:
+        raise HTTPException(status_code=404, detail="Ask recent not found.")
+
+    record = ask_chats.get_chat(user_id, cid)
+    query_ids: set[str] = {cid}
+    if record is not None:
+        for turn in record.turns:
+            if isinstance(turn.result, dict):
+                qid = str(turn.result.get("query_id") or "").strip()
+                if qid:
+                    query_ids.add(qid)
+
+    chat_deleted = ask_chats.delete_chat(user_id, cid)
+    mem_deleted = False
+    query_deleted = False
+    for qid in query_ids:
+        if history.delete(qid):
+            mem_deleted = True
+        if ask_queries.delete_ask_query(user_id, qid):
+            query_deleted = True
+
     if not chat_deleted and not mem_deleted and not query_deleted:
         raise HTTPException(status_code=404, detail="Ask recent not found.")
 

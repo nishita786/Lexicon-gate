@@ -228,31 +228,37 @@ export default function App() {
   async function deleteSidebarRecent(item, event) {
     event?.stopPropagation?.();
     event?.preventDefault?.();
+    if (!item?.id) return;
     const key = `${item.kind}:${item.id}`;
+    const previous = sidebarRecents;
+    // Remove immediately so the × feels instant.
+    setSidebarRecents((prev) => prev.filter((row) => `${row.kind}:${row.id}` !== key));
+    if (activeRecentId === key) {
+      setActiveRecentId(null);
+      if (item.kind === "ask") {
+        setLastResult(null);
+        setSelectedEvidence(null);
+        setAskScope(null);
+        setAskDraft("");
+        setAskChatId(null);
+        setAskRestoreTurns(null);
+        setChatEpoch((n) => n + 1);
+      } else {
+        setFindRestore(null);
+      }
+    }
+    setHistory((prev) => (item.kind === "ask" ? prev.filter((h) => h.query_id !== item.id) : prev));
     try {
       if (item.kind === "ask") {
         await api.deleteRecentAsk(item.id);
       } else {
         await api.deleteRecentPapers(item.id);
       }
-      if (activeRecentId === key) {
-        setActiveRecentId(null);
-        if (item.kind === "ask") {
-          setLastResult(null);
-          setSelectedEvidence(null);
-          setAskScope(null);
-          setAskDraft("");
-          setAskChatId(null);
-          setAskRestoreTurns(null);
-          setChatEpoch((n) => n + 1);
-        } else {
-          setFindRestore(null);
-        }
-      }
-      setHistory((prev) => (item.kind === "ask" ? prev.filter((h) => h.query_id !== item.id) : prev));
       await loadSidebarRecents();
     } catch (err) {
       console.warn(err);
+      setSidebarRecents(previous);
+      await loadSidebarRecents();
     }
   }
 
@@ -420,7 +426,15 @@ export default function App() {
                             className="sidebar-recent-delete"
                             aria-label={`Delete chat: ${topic}`}
                             title="Remove from history"
-                            onClick={(event) => deleteSidebarRecent(item, event)}
+                            onMouseDown={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                            }}
+                            onClick={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              deleteSidebarRecent(item, event);
+                            }}
                           >
                             ×
                           </button>

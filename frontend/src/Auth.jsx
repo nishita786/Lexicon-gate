@@ -2,16 +2,16 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 
 const BEATS = [
-  { word: "Find", line: "Search the literature by intent." },
-  { word: "Library", line: "Keep every paper on your shelf." },
-  { word: "Cite", line: "Ask — and open the source behind it." },
+  { word: "Find", line: "Search the literature by what you mean." },
+  { word: "Library", line: "Every paper stays on your shelf." },
+  { word: "Cite", line: "Ask — then open the source behind it." },
 ];
 
 /** Brand hold → beats → unlock continue (ms). Skippable anytime. */
 const INTRO_TIMING = {
-  brandHold: 1500,
-  beatGap: 1500,
-  readyHold: 450,
+  brandHold: 1200,
+  beatGap: 1400,
+  readyHold: 400,
 };
 
 const GIS_SCRIPT = "https://accounts.google.com/gsi/client";
@@ -217,7 +217,7 @@ export default function AuthScreen({ onSignedIn }) {
   const lineText = activeBeat
     ? activeBeat.line
     : introReady
-      ? "Step through — your desk is waiting."
+      ? "Your research desk is ready."
       : "\u00a0";
 
   return (
@@ -238,6 +238,7 @@ export default function AuthScreen({ onSignedIn }) {
           aria-live="polite"
         >
           <Logo size="hero" />
+
           <h1 className="intro-headline">
             Where research
             <span className="intro-headline-line">keeps its sources</span>
@@ -273,12 +274,12 @@ export default function AuthScreen({ onSignedIn }) {
           <div className="intro-actions">
             {introReady ? (
               <button type="button" className="primary intro-continue" onClick={finishIntro}>
-                <span>Enter the gate</span>
+                <span>Enter Lexicon Gate</span>
                 <span className="intro-continue-arrow" aria-hidden="true" />
               </button>
             ) : (
               <button type="button" className="ghost intro-skip" onClick={finishIntro}>
-                Skip
+                Skip intro
               </button>
             )}
           </div>
