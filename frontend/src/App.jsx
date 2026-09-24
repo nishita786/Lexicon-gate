@@ -20,10 +20,10 @@ import {
 } from "./voice";
 
 const NAV = [
-  ["collaborators", "Collaborators"],
   ["ask", "Ask"],
   ["write", "Write"],
   ["find", "Find papers"],
+  ["collaborators", "Collaborators"],
   ["library", "Library"],
   ["compare", "Compare"],
   ["events", "Events"],
@@ -53,6 +53,20 @@ export default function App() {
   const [askRestoreTurns, setAskRestoreTurns] = useState(null);
   const [sidebarRecents, setSidebarRecents] = useState([]);
   const [activeRecentId, setActiveRecentId] = useState(null);
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    try {
+      return localStorage.getItem("lexicon-sidebar-open") !== "0";
+    } catch {
+      return true;
+    }
+  });
+  const [chatsOpen, setChatsOpen] = useState(() => {
+    try {
+      return localStorage.getItem("lexicon-chats-open") === "1";
+    } catch {
+      return false;
+    }
+  });
   const [findRestore, setFindRestore] = useState(null);
   const [comparePrefill, setComparePrefill] = useState(null);
   const [writeStoryId, setWriteStoryId] = useState(null);
@@ -115,6 +129,30 @@ export default function App() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  function toggleSidebar() {
+    setSidebarOpen((open) => {
+      const next = !open;
+      try {
+        localStorage.setItem("lexicon-sidebar-open", next ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }
+
+  function toggleChats() {
+    setChatsOpen((open) => {
+      const next = !open;
+      try {
+        localStorage.setItem("lexicon-chats-open", next ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }
 
   function startNewChat() {
     setLastResult(null);
@@ -239,13 +277,20 @@ export default function App() {
     setPage("ask");
   }
 
+  const askChatRecents = useMemo(
+    () => sidebarRecents.filter((item) => item.kind === "ask"),
+    [sidebarRecents],
+  );
+
   const navIndex = Math.max(0, NAV.findIndex(([id]) => id === page));
 
   useLayoutEffect(() => {
     const nav = navRef.current;
     if (!nav) return;
     function place() {
-      const btn = nav.querySelector("button.active");
+      const btn =
+        nav.querySelector(":scope > .nav-chats > button.active") ||
+        nav.querySelector(":scope > button.active");
       if (!btn) return;
       nav.style.setProperty("--thumb-x", `${btn.offsetLeft}px`);
       nav.style.setProperty("--thumb-w", `${btn.offsetWidth}px`);
@@ -253,9 +298,13 @@ export default function App() {
       nav.style.setProperty("--thumb-h", `${btn.offsetHeight}px`);
     }
     place();
+    const raf = requestAnimationFrame(place);
     window.addEventListener("resize", place);
-    return () => window.removeEventListener("resize", place);
-  }, [page, session, sidebarRecents.length]);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", place);
+    };
+  }, [page, session, askChatRecents.length, chatsOpen, sidebarOpen]);
 
   if (session === undefined) {
     return (
@@ -300,7 +349,7 @@ export default function App() {
   }
 
   return (
-    <div className="app">
+    <div className={`app${sidebarOpen ? "" : " sidebar-collapsed"}`}>
       <div className="app-atmosphere" aria-hidden="true">
         <span className="shape shape-sphere shape-a is-near" />
         <span className="shape shape-sphere shape-b is-far" />
@@ -312,58 +361,91 @@ export default function App() {
       <a className="skip-link" href="#main">
         Skip to content
       </a>
-      <aside className="sidebar">
-        <div className="brand">
-          <Logo size="nav" />
-          <p>Find sources. Ask with evidence. Trust the answer.</p>
+      <aside
+        className="sidebar"
+        aria-hidden={!sidebarOpen}
+        {...(!sidebarOpen ? { inert: "" } : {})}
+      >
+        <div className="sidebar-top">
+          <div className="brand">
+            <Logo size="nav" />
+            <p>Find sources. Ask with evidence. Trust the answer.</p>
+          </div>
+          <button
+            type="button"
+            className="sidebar-toggle"
+            onClick={toggleSidebar}
+            aria-label="Close sidebar"
+            title="Close sidebar"
+          >
+            «
+          </button>
         </div>
         <button type="button" className="new-chat-btn" onClick={startNewChat}>
           New Chat
         </button>
-        <div className="sidebar-recents">
-          <div className="sidebar-recents-label">Chats</div>
-          {!sidebarRecents.length ? (
-            <p className="sidebar-recents-empty">Your conversations will show up here.</p>
-          ) : (
-            <ul className="sidebar-recents-list">
-              {sidebarRecents.map((item) => {
-                const key = `${item.kind}:${item.id}`;
-                return (
-                  <li key={key} className="sidebar-recent-row">
-                    <button
-                      type="button"
-                      className={`sidebar-recent-item${activeRecentId === key ? " active" : ""}`}
-                      onClick={() => openSidebarRecent(item)}
-                      title={item.query}
-                    >
-                      <span className={`sidebar-recent-kind ${item.kind}`}>
-                        {item.kind === "ask" ? "Ask" : "Papers"}
-                      </span>
-                      <span className="sidebar-recent-title">{item.query}</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="sidebar-recent-delete"
-                      aria-label={`Delete ${item.query || "recent"}`}
-                      title="Delete"
-                      onClick={(event) => deleteSidebarRecent(item, event)}
-                    >
-                      ×
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
         <nav ref={navRef} data-active={page} data-index={navIndex} aria-label="Primary">
           <span className="nav-thumb" aria-hidden="true" />
+          <div className={`nav-chats${chatsOpen ? " is-open" : ""}`}>
+            <button
+              type="button"
+              className={chatsOpen ? "active" : ""}
+              onClick={toggleChats}
+              aria-expanded={chatsOpen}
+              aria-controls="sidebar-chats-list"
+            >
+              <span>Chats</span>
+            </button>
+            {chatsOpen && (
+              <div id="sidebar-chats-list" className="nav-chats-panel">
+                {!askChatRecents.length ? (
+                  <p className="sidebar-recents-empty">Your conversations will show up here.</p>
+                ) : (
+                  <ul className="sidebar-recents-list">
+                    {askChatRecents.map((item) => {
+                      const key = `${item.kind}:${item.id}`;
+                      const topic = String(item.query || "Untitled chat").trim() || "Untitled chat";
+                      return (
+                        <li key={key} className="sidebar-recent-row">
+                          <button
+                            type="button"
+                            className={`sidebar-recent-item${activeRecentId === key ? " active" : ""}`}
+                            onClick={() => openSidebarRecent(item)}
+                            title={topic}
+                          >
+                            <span className="sidebar-recent-title">{topic}</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="sidebar-recent-delete"
+                            aria-label={`Delete chat: ${topic}`}
+                            title="Remove from history"
+                            onClick={(event) => deleteSidebarRecent(item, event)}
+                          >
+                            ×
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
           {NAV.map(([id, label]) => (
             <button
               key={id}
               type="button"
-              className={page === id ? "active" : ""}
-              onClick={() => setPage(id)}
+              className={!chatsOpen && page === id ? "active" : ""}
+              onClick={() => {
+                setChatsOpen(false);
+                try {
+                  localStorage.setItem("lexicon-chats-open", "0");
+                } catch {
+                  /* ignore */
+                }
+                setPage(id);
+              }}
             >
               <span>{label}</span>
             </button>
@@ -378,6 +460,17 @@ export default function App() {
       </aside>
       <div className="workspace">
         <header className="workspace-bar">
+          {!sidebarOpen && (
+            <button
+              type="button"
+              className="sidebar-toggle sidebar-toggle-open"
+              onClick={toggleSidebar}
+              aria-label="Open sidebar"
+              title="Open sidebar"
+            >
+              »
+            </button>
+          )}
           <span>
             {health
               ? `${docs.length} source${docs.length === 1 ? "" : "s"} · ${health.knowledge_base?.chunks ?? 0} passages`
