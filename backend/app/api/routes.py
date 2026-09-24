@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from ..config import get_settings
@@ -54,6 +54,9 @@ from ..services.llm.registry import available_llm_providers, get_llm_provider
 from ..services.store.history import history
 from ..services.store.knowledge_base import get_knowledge_base
 from ..services.vectorstore.registry import available_vector_stores
+from ..services.workspace import ask_chats, ask_queries
+from ..models.workspace import AskChatTurn
+from .auth import current_user_from_request
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -377,39 +380,105 @@ def papers_import(request: PaperImportRequest) -> PaperImportResponse:
 
 
 # --------------------------------------------------------------------------- query
-@router.post("/query", response_model=PipelineResult, tags=["query"])
-def query(request: QueryRequest) -> PipelineResult:
-    runner = _runner(PipelineName.enhanced, threshold=request.evidence_threshold)
-    result = runner.run(
-        request.query,
-        top_k=request.top_k,
-        document_ids=request.document_ids,
-    )
+def _persist_ask(
+    result: PipelineResult,
+    http_request: Request | None,
+    *,
+    chat_id: str | None = None,
+) -> str | None:
     history.add(result)
-    if not request.include_trace:
+    if http_request is None:
+        return None
+    user = current_user_from_request(http_request)
+    user_id = str((user or {}).get("user_id") or "").strip()
+    if not user_id:
+        return None
+    ask_queries.save_ask_query(user_id, result)
+
+    turn = AskChatTurn(
+        query=result.query,
+        result=result.model_dump(mode="json"),
+        error="",
+    )
+    cid = str(chat_id or "").strip() or None
+    existing = ask_chats.get_chat(user_id, cid) if cid else None
+    turns = list(existing.turns) if existing else []
+    # Replace same query_id turn if re-asked; otherwise append.
+    qid = str(result.query_id or "")
+    replaced = False
+    next_turns = []
+    for prev in turns:
+        prev_qid = ""
+        if isinstance(prev.result, dict):
+            prev_qid = str(prev.result.get("query_id") or "")
+        if prev_qid and prev_qid == qid:
+            next_turns.append(turn)
+            replaced = True
+        else:
+            next_turns.append(prev)
+    if not replaced:
+        next_turns.append(turn)
+    saved = ask_chats.save_chat(
+        user_id,
+        chat_id=cid,
+        title=(existing.title if existing else "") or result.query,
+        turns=next_turns,
+    )
+    return saved.chat_id
+
+
+def _load_ask(query_id: str, http_request: Request | None = None) -> PipelineResult | None:
+    result = history.get(query_id)
+    if result is not None:
+        return result
+    if http_request is None:
+        return None
+    user = current_user_from_request(http_request)
+    user_id = str((user or {}).get("user_id") or "").strip()
+    if not user_id:
+        return None
+    return ask_queries.get_ask_query(user_id, query_id)
+
+
+@router.post("/query", response_model=PipelineResult, tags=["query"])
+def query(payload: QueryRequest, request: Request) -> PipelineResult:
+    runner = _runner(PipelineName.enhanced, threshold=payload.evidence_threshold)
+    result = runner.run(
+        payload.query,
+        top_k=payload.top_k,
+        document_ids=payload.document_ids,
+    )
+    chat_id = _persist_ask(result, request, chat_id=payload.chat_id)
+    if chat_id:
+        # Stash for clients that read config_snapshot extras; keep response model stable.
+        result.config_snapshot = {
+            **(result.config_snapshot or {}),
+            "chat_id": chat_id,
+        }
+    if not payload.include_trace:
         result.trace = []
     return result
 
 
 @router.post("/query/compare", response_model=CompareResponse, tags=["query"])
-def compare(request: CompareRequest) -> CompareResponse:
+def compare(payload: CompareRequest, request: Request) -> CompareResponse:
     results: dict[str, PipelineResult] = {}
     rows: list[ComparisonRow] = []
     query_id = ""
-    for pipeline in request.pipelines:
+    for pipeline in payload.pipelines:
         result = _runner(pipeline).run(
-            request.query,
-            top_k=request.top_k,
-            document_ids=request.document_ids,
+            payload.query,
+            top_k=payload.top_k,
+            document_ids=payload.document_ids,
         )
-        history.add(result)
+        _persist_ask(result, request)
         results[pipeline.value] = result
         rows.append(_to_row(result))
         query_id = result.query_id
     winner, reason = _pick_winner(rows)
     return CompareResponse(
         query_id=query_id,
-        query=request.query,
+        query=payload.query,
         rows=rows,
         results=results,
         winner=winner,
@@ -418,8 +487,8 @@ def compare(request: CompareRequest) -> CompareResponse:
 
 
 @router.get("/query/{query_id}/trace", tags=["query"])
-def get_trace(query_id: str) -> dict[str, Any]:
-    result = history.get(query_id)
+def get_trace(query_id: str, request: Request) -> dict[str, Any]:
+    result = _load_ask(query_id, request)
     if result is None:
         raise HTTPException(status_code=404, detail="Query id not found in recent history")
     return {
@@ -433,9 +502,16 @@ def get_trace(query_id: str) -> dict[str, Any]:
 
 
 @router.get("/query/recent", tags=["query"])
-def recent_queries(limit: int = Query(default=12, ge=1, le=50)) -> list[dict[str, Any]]:
+def recent_queries(request: Request, limit: int = Query(default=12, ge=1, le=50)) -> list[dict[str, Any]]:
+    user = current_user_from_request(request)
+    user_id = str((user or {}).get("user_id") or "").strip()
     out = []
-    for result in history.recent(limit):
+    if user_id:
+        entries = ask_queries.list_ask_queries(user_id, limit=limit)
+        source = [entry["result"] for entry in entries]
+    else:
+        source = history.recent(limit)
+    for result in source:
         out.append(
             {
                 "query_id": result.query_id,
@@ -451,8 +527,8 @@ def recent_queries(limit: int = Query(default=12, ge=1, le=50)) -> list[dict[str
 
 
 @router.get("/query/history/{query_id}", response_model=PipelineResult, tags=["query"])
-def get_history_item(query_id: str) -> PipelineResult:
-    result = history.get(query_id)
+def get_history_item(query_id: str, request: Request) -> PipelineResult:
+    result = _load_ask(query_id, request)
     if result is None:
         raise HTTPException(status_code=404, detail="Query id not found in recent history")
     return result

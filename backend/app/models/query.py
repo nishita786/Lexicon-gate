@@ -297,6 +297,8 @@ class QueryRequest(BaseModel):
     document_ids: list[str] | None = None
     evidence_threshold: float | None = None
     include_trace: bool = True
+    # Optional ChatGPT-style thread id so Ask history stays grouped in Recents.
+    chat_id: str | None = None
 
 
 class CompareRequest(BaseModel):

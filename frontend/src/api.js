@@ -116,6 +116,13 @@ export const api = {
     return request(`/events${suffix}`);
   },
   workspaceRecents: (limit = 24) => request(`/workspace/recents?limit=${limit}`),
+  saveAskChat: (payload) =>
+    request("/workspace/ask-chats", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }),
+  askChatItem: (id) => request(`/workspace/ask-chats/${encodeURIComponent(id)}`),
   savePaperSearch: (payload) =>
     request("/workspace/paper-searches", {
       method: "POST",

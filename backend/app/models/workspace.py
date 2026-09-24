@@ -24,6 +24,27 @@ class PaperSearchRecord(BaseModel):
     created_at: str
 
 
+class AskChatTurn(BaseModel):
+    query: str
+    result: dict[str, Any] | None = None
+    error: str = ""
+
+
+class AskChatSaveRequest(BaseModel):
+    chat_id: str | None = None
+    title: str = ""
+    turns: list[AskChatTurn] = Field(default_factory=list)
+
+
+class AskChatRecord(BaseModel):
+    chat_id: str
+    user_id: str
+    title: str
+    created_at: str
+    updated_at: str
+    turns: list[AskChatTurn] = Field(default_factory=list)
+
+
 class WorkspaceRecentItem(BaseModel):
     kind: Literal["ask", "papers"]
     id: str

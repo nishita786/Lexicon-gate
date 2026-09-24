@@ -49,6 +49,8 @@ export default function App() {
   const [askScope, setAskScope] = useState(null);
   const [askDraft, setAskDraft] = useState("");
   const [chatEpoch, setChatEpoch] = useState(0);
+  const [askChatId, setAskChatId] = useState(null);
+  const [askRestoreTurns, setAskRestoreTurns] = useState(null);
   const [sidebarRecents, setSidebarRecents] = useState([]);
   const [activeRecentId, setActiveRecentId] = useState(null);
   const [findRestore, setFindRestore] = useState(null);
@@ -119,6 +121,8 @@ export default function App() {
     setSelectedEvidence(null);
     setAskScope(null);
     setAskDraft("");
+    setAskChatId(null);
+    setAskRestoreTurns(null);
     setActiveRecentId(null);
     setFindRestore(null);
     setChatEpoch((n) => n + 1);
@@ -132,14 +136,41 @@ export default function App() {
       setSelectedEvidence(null);
       setAskScope(null);
       setLastResult(null);
-      setChatEpoch((n) => n + 1);
+      setAskChatId(null);
+      setAskRestoreTurns(null);
       setPage("ask");
       try {
-        const saved = await api.historyItem(item.id);
-        setLastResult(saved);
+        const chat = await api.askChatItem(item.id);
+        const turns = (chat.turns || []).map((turn, index) => ({
+          id: turn?.result?.query_id || `${chat.chat_id}-${index}`,
+          query: turn.query || "",
+          result: turn.result || null,
+          pending: false,
+          error: turn.error || "",
+        }));
+        setAskChatId(chat.chat_id);
+        setAskRestoreTurns(turns);
+        const lastWithResult = [...turns].reverse().find((t) => t.result);
+        if (lastWithResult?.result) setLastResult(lastWithResult.result);
       } catch {
-        setAskDraft(item.query || "");
+        try {
+          const saved = await api.historyItem(item.id);
+          setAskChatId(null);
+          setAskRestoreTurns([
+            {
+              id: saved.query_id || item.id,
+              query: saved.query || item.query || "",
+              result: saved,
+              pending: false,
+              error: "",
+            },
+          ]);
+          setLastResult(saved);
+        } catch {
+          setAskDraft(item.query || "");
+        }
       }
+      setChatEpoch((n) => n + 1);
       return;
     }
     try {
@@ -173,6 +204,8 @@ export default function App() {
           setSelectedEvidence(null);
           setAskScope(null);
           setAskDraft("");
+          setAskChatId(null);
+          setAskRestoreTurns(null);
           setChatEpoch((n) => n + 1);
         } else {
           setFindRestore(null);
@@ -197,6 +230,8 @@ export default function App() {
     setSelectedEvidence(null);
     setAskScope(null);
     setAskDraft("");
+    setAskChatId(null);
+    setAskRestoreTurns(null);
     setHistory([]);
     setSidebarRecents([]);
     setActiveRecentId(null);
@@ -285,23 +320,10 @@ export default function App() {
         <button type="button" className="new-chat-btn" onClick={startNewChat}>
           New Chat
         </button>
-        <nav ref={navRef} data-active={page} data-index={navIndex} aria-label="Primary">
-          <span className="nav-thumb" aria-hidden="true" />
-          {NAV.map(([id, label]) => (
-            <button
-              key={id}
-              type="button"
-              className={page === id ? "active" : ""}
-              onClick={() => setPage(id)}
-            >
-              <span>{label}</span>
-            </button>
-          ))}
-        </nav>
         <div className="sidebar-recents">
-          <div className="sidebar-recents-label">Recents</div>
+          <div className="sidebar-recents-label">Chats</div>
           {!sidebarRecents.length ? (
-            <p className="sidebar-recents-empty">No chats yet. Ask or find papers to continue later.</p>
+            <p className="sidebar-recents-empty">Your conversations will show up here.</p>
           ) : (
             <ul className="sidebar-recents-list">
               {sidebarRecents.map((item) => {
@@ -334,6 +356,19 @@ export default function App() {
             </ul>
           )}
         </div>
+        <nav ref={navRef} data-active={page} data-index={navIndex} aria-label="Primary">
+          <span className="nav-thumb" aria-hidden="true" />
+          {NAV.map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              className={page === id ? "active" : ""}
+              onClick={() => setPage(id)}
+            >
+              <span>{label}</span>
+            </button>
+          ))}
+        </nav>
         <div className="sidebar-foot">
           <span className="topbar-user">{session.name || session.email}</span>
           <button type="button" className="ghost" onClick={logout}>
@@ -371,8 +406,15 @@ export default function App() {
               selected={selectedEvidence}
               setSelected={setSelectedEvidence}
               onQueried={refresh}
+              onRecentsChange={loadSidebarRecents}
               askScope={askScope}
               onClearScope={() => setAskScope(null)}
+              chatId={askChatId}
+              onChatId={(id) => {
+                setAskChatId(id);
+                if (id) setActiveRecentId(`ask:${id}`);
+              }}
+              initialTurns={askRestoreTurns}
             />
           )}
           {page === "write" && (
@@ -710,23 +752,58 @@ function Events() {
   );
 }
 
-function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, onQueried, askScope, onClearScope }) {
+function Ask({
+  docs,
+  query,
+  setQuery,
+  result,
+  setResult,
+  selected,
+  setSelected,
+  onQueried,
+  onRecentsChange,
+  askScope,
+  onClearScope,
+  chatId,
+  onChatId,
+  initialTurns,
+}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [selectedDocIds, setSelectedDocIds] = useState([]);
   const [turns, setTurns] = useState(() =>
-    result
-      ? [
-          {
-            id: result.query_id || "restored",
-            query: result.query || "",
-            result,
-            pending: false,
-            error: "",
-          },
-        ]
-      : [],
+    Array.isArray(initialTurns) && initialTurns.length
+      ? initialTurns
+      : result
+        ? [
+            {
+              id: result.query_id || "restored",
+              query: result.query || "",
+              result,
+              pending: false,
+              error: "",
+            },
+          ]
+        : [],
   );
+  const [activeChatId, setActiveChatId] = useState(chatId || null);
+  const chatIdRef = useRef(chatId || null);
+  const turnsRef = useRef(
+    Array.isArray(initialTurns) && initialTurns.length
+      ? initialTurns
+      : result
+        ? [
+            {
+              id: result.query_id || "restored",
+              query: result.query || "",
+              result,
+              pending: false,
+              error: "",
+            },
+          ]
+        : [],
+  );
+  const submittingRef = useRef(false);
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [listening, setListening] = useState(false);
   const [voiceHint, setVoiceHint] = useState("");
@@ -764,30 +841,65 @@ function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, 
     warmSpeechVoices();
   }, []);
 
+  async function persistChat(nextTurns, existingChatId = chatIdRef.current || activeChatId) {
+    const durable = (nextTurns || []).filter((t) => t.query && (t.result || t.error));
+    if (!durable.length) return existingChatId;
+    try {
+      const saved = await api.saveAskChat({
+        chat_id: existingChatId || undefined,
+        title: durable[0]?.query || "",
+        turns: durable.map((t) => ({
+          query: t.query,
+          result: t.result || null,
+          error: t.error || "",
+        })),
+      });
+      chatIdRef.current = saved.chat_id;
+      setActiveChatId(saved.chat_id);
+      onChatId?.(saved.chat_id);
+      await onRecentsChange?.();
+      return saved.chat_id;
+    } catch (err) {
+      console.warn("Failed to save chat to Recents:", err);
+      setError((prev) => prev || err?.message || "Could not save this chat to history.");
+      return existingChatId;
+    }
+  }
+
   function toggleDoc(id) {
     setSelectedDocIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
 
   function stopListening() {
-    recognitionRef.current?.stop();
+    const rec = recognitionRef.current;
     recognitionRef.current = null;
+    if (rec) {
+      try {
+        if (typeof rec.abort === "function") rec.abort();
+        else if (typeof rec.stop === "function") rec.stop();
+      } catch {
+        /* ignore */
+      }
+    }
     setListening(false);
     setVoiceHint("");
   }
 
   function startListening() {
-    if (!voiceSupported || emptyLibrary || busy) return;
+    if (!voiceSupported || emptyLibrary || busy || submittingRef.current) return;
     stopSpeaking();
     stopListening();
     baseQueryRef.current = (query || "").trim();
     const session = createRecognition({
       onResult: ({ display }) => {
+        if (submittingRef.current) return;
         const base = baseQueryRef.current;
         const next = base ? `${base} ${display}`.trim() : display;
         setQuery(next);
         setVoiceHint(display ? "Listening…" : "Speak your question…");
       },
       onError: (err) => {
+        if (submittingRef.current) return;
         setError(err.message);
         stopListening();
       },
@@ -819,10 +931,12 @@ function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, 
   }
 
   async function ask(next = query) {
-    const text = (next || "").trim();
-    if (!text || emptyLibrary || busy) return;
+    const text = (typeof next === "string" ? next : query || "").trim();
+    if (!text || emptyLibrary || busy || submittingRef.current) return;
+    submittingRef.current = true;
     stopListening();
     stopSpeaking();
+    baseQueryRef.current = "";
     setQuery("");
     setBusy(true);
     setError("");
@@ -831,7 +945,10 @@ function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, 
       typeof crypto !== "undefined" && crypto.randomUUID
         ? crypto.randomUUID()
         : `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    setTurns((prev) => [...prev, { id: turnId, query: text, result: null, pending: true, error: "" }]);
+    const pendingTurn = { id: turnId, query: text, result: null, pending: true, error: "" };
+    const withPending = [...turnsRef.current, pendingTurn];
+    turnsRef.current = withPending;
+    setTurns(withPending);
     try {
       const scopedIds = selectedDocIds.length
         ? selectedDocIds
@@ -842,30 +959,46 @@ function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, 
         query: text,
         include_trace: true,
         document_ids: scopedIds,
+        chat_id: chatIdRef.current || activeChatId || undefined,
       });
-      setTurns((prev) =>
-        prev.map((t) =>
-          t.id === turnId
-            ? {
-                ...t,
-                id: payload.query_id || turnId,
-                result: payload,
-                pending: false,
-                error: "",
-              }
-            : t,
-        ),
+      const serverChatId = payload?.config_snapshot?.chat_id;
+      if (serverChatId) {
+        chatIdRef.current = serverChatId;
+        setActiveChatId(serverChatId);
+        onChatId?.(serverChatId);
+      }
+      const nextTurns = turnsRef.current.map((t) =>
+        t.id === turnId
+          ? {
+              ...t,
+              id: payload.query_id || turnId,
+              result: payload,
+              pending: false,
+              error: "",
+            }
+          : t,
       );
+      turnsRef.current = nextTurns;
+      setTurns(nextTurns);
       setResult(payload);
+      setQuery("");
+      await persistChat(nextTurns, chatIdRef.current || serverChatId || activeChatId);
       await onQueried();
+      await onRecentsChange?.();
     } catch (err) {
       const message = err?.message || "Request failed.";
       setError(message);
-      setTurns((prev) =>
-        prev.map((t) => (t.id === turnId ? { ...t, pending: false, error: message } : t)),
+      const nextTurns = turnsRef.current.map((t) =>
+        t.id === turnId ? { ...t, pending: false, error: message } : t,
       );
+      turnsRef.current = nextTurns;
+      setTurns(nextTurns);
+      setQuery("");
+      await persistChat(nextTurns);
     } finally {
+      submittingRef.current = false;
       setBusy(false);
+      setQuery("");
     }
   }
 
@@ -1012,15 +1145,19 @@ function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, 
             placeholder={
               emptyLibrary
                 ? "Add sources first…"
-                : listening
-                  ? "Listening…"
-                  : "Message Lexicon Gate… or tap the mic"
+                : busy
+                  ? "Searching…"
+                  : listening
+                    ? "Listening…"
+                    : "Message Lexicon Gate… or tap the mic"
             }
-            disabled={emptyLibrary || busy}
+            disabled={emptyLibrary}
+            readOnly={busy}
+            autoComplete="off"
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                ask();
+                if (!busy) ask();
               }
             }}
           />
@@ -1940,6 +2077,8 @@ function AnswerView({ result, docs, selected, onSelect }) {
   const [speakError, setSpeakError] = useState("");
   const speakHandleRef = useRef(null);
   const canSpeak = speechSynthesisSupported();
+  const supportBadge = verificationBadge(result);
+  const showEvidence = supportBadge.label === "Supported";
   const evidenceByCite = useMemo(() => {
     const map = new Map();
     for (const item of result.evidence || []) map.set(item.citation_id, item);
@@ -2106,7 +2245,7 @@ function AnswerView({ result, docs, selected, onSelect }) {
       ) : null}
       {speakError ? <p className="error ask-speak-error">{speakError}</p> : null}
 
-      {contradictions.length > 0 && (
+      {showEvidence && contradictions.length > 0 && (
         <details className="chat-panel" open>
           <summary>Conflicting evidence</summary>
           <p className="status" style={{ marginTop: 0 }}>
@@ -2140,31 +2279,33 @@ function AnswerView({ result, docs, selected, onSelect }) {
         </details>
       )}
 
-      <details className="chat-panel">
-        <summary>
-          Evidence
-          <span className="ask-sources-hint">
-            {(result.evidence || []).length
-              ? `${result.evidence.length} passage${result.evidence.length === 1 ? "" : "s"}`
-              : "None cited"}
-          </span>
-        </summary>
-        {(result.evidence || []).length === 0 ? (
-          <p className="status">No passages were cited.</p>
-        ) : (
-          <div className="evidence-list">
-            {(result.evidence || []).map((item) => (
-              <EvidenceCard
-                key={item.chunk_id}
-                item={item}
-                active={selected?.chunk_id === item.chunk_id}
-                expanded={selected?.chunk_id === item.chunk_id}
-                onSelect={() => onSelect(item)}
-              />
-            ))}
-          </div>
-        )}
-      </details>
+      {showEvidence && (
+        <details className="chat-panel">
+          <summary>
+            Evidence
+            <span className="ask-sources-hint">
+              {(result.evidence || []).length
+                ? `${result.evidence.length} passage${result.evidence.length === 1 ? "" : "s"}`
+                : "None cited"}
+            </span>
+          </summary>
+          {(result.evidence || []).length === 0 ? (
+            <p className="status">No passages were cited.</p>
+          ) : (
+            <div className="evidence-list">
+              {(result.evidence || []).map((item) => (
+                <EvidenceCard
+                  key={item.chunk_id}
+                  item={item}
+                  active={selected?.chunk_id === item.chunk_id}
+                  expanded={selected?.chunk_id === item.chunk_id}
+                  onSelect={() => onSelect(item)}
+                />
+              ))}
+            </div>
+          )}
+        </details>
+      )}
 
       <details className="chat-panel">
         <summary>Details</summary>
