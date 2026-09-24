@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, ms, pct } from "./api";
 import AuthScreen, { Logo } from "./Auth";
 import {
@@ -714,7 +714,19 @@ function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [selectedDocIds, setSelectedDocIds] = useState([]);
-  const [askedQuery, setAskedQuery] = useState(() => result?.query || "");
+  const [turns, setTurns] = useState(() =>
+    result
+      ? [
+          {
+            id: result.query_id || "restored",
+            query: result.query || "",
+            result,
+            pending: false,
+            error: "",
+          },
+        ]
+      : [],
+  );
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [listening, setListening] = useState(false);
   const [voiceHint, setVoiceHint] = useState("");
@@ -736,12 +748,8 @@ function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, 
   }, [askScope, docs]);
 
   useEffect(() => {
-    if (result?.query) setAskedQuery(result.query);
-  }, [result?.query_id, result?.query]);
-
-  useEffect(() => {
     threadEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [result?.query_id, busy]);
+  }, [turns.length, busy]);
 
   useEffect(
     () => () => {
@@ -812,14 +820,18 @@ function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, 
 
   async function ask(next = query) {
     const text = (next || "").trim();
-    if (!text || emptyLibrary) return;
+    if (!text || emptyLibrary || busy) return;
     stopListening();
     stopSpeaking();
+    setQuery("");
     setBusy(true);
     setError("");
     setSelected(null);
-    setAskedQuery(text);
-    setResult(null);
+    const turnId =
+      typeof crypto !== "undefined" && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `turn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setTurns((prev) => [...prev, { id: turnId, query: text, result: null, pending: true, error: "" }]);
     try {
       const scopedIds = selectedDocIds.length
         ? selectedDocIds
@@ -831,21 +843,36 @@ function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, 
         include_trace: true,
         document_ids: scopedIds,
       });
+      setTurns((prev) =>
+        prev.map((t) =>
+          t.id === turnId
+            ? {
+                ...t,
+                id: payload.query_id || turnId,
+                result: payload,
+                pending: false,
+                error: "",
+              }
+            : t,
+        ),
+      );
       setResult(payload);
-      setQuery("");
       await onQueried();
     } catch (err) {
-      setError(err.message);
+      const message = err?.message || "Request failed.";
+      setError(message);
+      setTurns((prev) =>
+        prev.map((t) => (t.id === turnId ? { ...t, pending: false, error: message } : t)),
+      );
     } finally {
       setBusy(false);
     }
   }
 
-  const badge = result ? verificationBadge(result) : null;
   const scopeLabel = selectedDocIds.length
     ? `${selectedDocIds.length} source${selectedDocIds.length === 1 ? "" : "s"}`
     : askScope?.label || "";
-  const showThread = Boolean(result || busy || askedQuery);
+  const showThread = turns.length > 0;
 
   return (
     <div className={`ask-chat${showThread ? " has-thread" : " is-empty"}`}>
@@ -864,41 +891,53 @@ function Ask({ docs, query, setQuery, result, setResult, selected, setSelected, 
 
         {showThread && (
           <>
-            {(askedQuery || result?.query) && (
-              <div className="chat-turn chat-turn-user">
-                <div className="chat-bubble chat-bubble-user">{askedQuery || result.query}</div>
-              </div>
-            )}
+            {turns.map((turn) => {
+              const badge = turn.result ? verificationBadge(turn.result) : null;
+              return (
+                <Fragment key={turn.id}>
+                  <div className="chat-turn chat-turn-user">
+                    <div className="chat-bubble chat-bubble-user">{turn.query}</div>
+                  </div>
 
-            {busy && !result && (
-              <div className="chat-turn chat-turn-assistant">
-                <div className="chat-bubble chat-bubble-assistant is-thinking">
-                  <span className="ask-thinking-dot" />
-                  <span className="ask-thinking-dot" />
-                  <span className="ask-thinking-dot" />
-                  Checking sources…
-                </div>
-              </div>
-            )}
-
-            {result && (
-              <div className="chat-turn chat-turn-assistant">
-                <div className="chat-bubble chat-bubble-assistant">
-                  {badge && (
-                    <div className="chat-answer-meta">
-                      <span className={`flag ${badge.tone}`}>{badge.label}</span>
-                      {busy && <span className="status">Updating…</span>}
+                  {turn.pending && (
+                    <div className="chat-turn chat-turn-assistant">
+                      <div className="chat-bubble chat-bubble-assistant is-thinking">
+                        <span className="ask-thinking-dot" />
+                        <span className="ask-thinking-dot" />
+                        <span className="ask-thinking-dot" />
+                        Checking sources…
+                      </div>
                     </div>
                   )}
-                  <AnswerView
-                    result={result}
-                    docs={docs}
-                    selected={selected}
-                    onSelect={setSelected}
-                  />
-                </div>
-              </div>
-            )}
+
+                  {turn.error && !turn.pending && !turn.result && (
+                    <div className="chat-turn chat-turn-assistant">
+                      <div className="chat-bubble chat-bubble-assistant">
+                        <p className="error">{turn.error}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {turn.result && (
+                    <div className="chat-turn chat-turn-assistant">
+                      <div className="chat-bubble chat-bubble-assistant">
+                        {badge && (
+                          <div className="chat-answer-meta">
+                            <span className={`flag ${badge.tone}`}>{badge.label}</span>
+                          </div>
+                        )}
+                        <AnswerView
+                          result={turn.result}
+                          docs={docs}
+                          selected={selected}
+                          onSelect={setSelected}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </Fragment>
+              );
+            })}
             <div ref={threadEndRef} />
           </>
         )}
