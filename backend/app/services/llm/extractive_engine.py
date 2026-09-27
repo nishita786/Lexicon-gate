@@ -70,6 +70,21 @@ _COPULA_RE = re.compile(
     r"consists of|includes|include|achieves|achieve|reports|reported)\b",
     re.I,
 )
+# Figure captions and "as you can see" asides read as unreliable openings.
+_VISUAL_LEAD_RE = re.compile(
+    r"^(?:(?:the\s+)?(?:above\s+|following\s+|next\s+)?"
+    r"(?:image|figure|fig\.?|illustration|diagram|chart|graph)\b"
+    r"|as you can see\b"
+    r"|as (?:shown|illustrated|depicted)"
+    r"(?:\s+in(?:\s+the)?(?:\s+(?:image|figure|fig\.?))?)?\b"
+    r"|shown in (?:the )?(?:image|figure|fig\.?)\b"
+    r")[,:\s\-–—]*",
+    re.I,
+)
+_VISUAL_INLINE_RE = re.compile(
+    r"^(?:image\s+)?as you can see[,:\s]+",
+    re.I,
+)
 
 
 @dataclass(slots=True)
@@ -89,6 +104,52 @@ class EvidenceSentence:
 # --------------------------------------------------------------------------- #
 # Sentence scoring and selection
 # --------------------------------------------------------------------------- #
+def strip_visual_aside(text: str) -> str:
+    """Drop figure-caption openers such as 'image as you can see'."""
+
+    cleaned = (text or "").strip()
+    previous = None
+    while cleaned and cleaned != previous:
+        previous = cleaned
+        cleaned = _VISUAL_LEAD_RE.sub("", cleaned).strip()
+        cleaned = _VISUAL_INLINE_RE.sub("", cleaned).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,;:-")
+    if cleaned and cleaned[0].islower():
+        cleaned = cleaned[0].upper() + cleaned[1:]
+    return cleaned
+
+
+def is_visual_aside(text: str) -> bool:
+    """True when a sentence is mostly a figure pointer, not a claim."""
+
+    raw = (text or "").strip()
+    if not raw:
+        return True
+    if re.match(r"(?i)^(?:image|figure|fig\.?)\b", raw) and len(raw) < 180:
+        return True
+    if re.match(r"(?i)^as you can see\b", raw):
+        return True
+    stripped = strip_visual_aside(raw)
+    return len(stripped) < 24 and len(raw) > len(stripped) + 6
+
+
+def _present_sentence(text: str) -> str:
+    cleaned = strip_visual_aside(text)
+    if len(cleaned) < 24 or is_visual_aside(cleaned):
+        return ""
+    if not cleaned.endswith((".", "!", "?")):
+        cleaned += "."
+    return cleaned
+
+
+def _overlaps_text(left: str, right: str) -> bool:
+    left_stems = stem_set(strip_citations(left))
+    right_stems = stem_set(strip_citations(right))
+    if not left_stems or not right_stems:
+        return False
+    return jaccard(left_stems, right_stems) > 0.5
+
+
 def collect_sentences(evidence: Sequence[dict[str, Any]]) -> list[EvidenceSentence]:
     sentences: list[EvidenceSentence] = []
     for rank, item in enumerate(evidence):
@@ -152,6 +213,7 @@ def score_sentences(
         if expansion:
             definition_boost = max(definition_boost, 0.55)
         topical = off_topic_penalty(sentence.text, query) if definitional else 0.0
+        visual_penalty = 0.9 if is_visual_aside(sentence.text) else 0.0
 
         sentence.score = (
             (
@@ -165,6 +227,7 @@ def score_sentences(
             * length_prior
             + definition_boost
             - topical
+            - visual_penalty
         )
     sentences.sort(key=lambda s: (-s.score, s.chunk_rank, s.position))
     return sentences
@@ -181,7 +244,10 @@ def select_sentences(
     chosen: list[EvidenceSentence] = []
     chosen_stems: list[set[str]] = []
 
-    for candidate in scored:
+    usable = [item for item in scored if not is_visual_aside(item.text)]
+    pool = usable or scored
+
+    for candidate in pool:
         if candidate.score < MIN_SENTENCE_SCORE and chosen:
             break
         cand_stems = stem_set(candidate.text)
@@ -195,8 +261,8 @@ def select_sentences(
         if len(chosen) >= limit:
             break
 
-    if not chosen and scored:
-        chosen = [scored[0]]
+    if not chosen and pool:
+        chosen = [pool[0]]
     return chosen
 
 
@@ -326,7 +392,10 @@ def synthesise_lead(
         span = copula_def
     else:
         span = extract_answer_span(best.text, query, idf)
+    span = strip_visual_aside(span)
     span = truncate(span, 240)
+    if not span or is_visual_aside(span):
+        return ""
     if not _span_covers_subject(query, span, best.text):
         return ""
     lead_stem, mode = declarative_stem(query)
@@ -463,14 +532,19 @@ def compose_answer(
     lead = ""
     if include_lead and selected:
         lead = synthesise_lead(query, selected[0], idf)
+        if lead and _overlaps_text(lead, selected[0].text):
+            # The cited sentence already says this; a second wording sounds repeated.
+            lead = ""
         if lead:
             parts.append(lead)
 
     used_citations: list[int] = []
     for sentence in selected:
-        text = sentence.text.strip()
-        if not text.endswith((".", "!", "?")):
-            text += "."
+        text = _present_sentence(sentence.text)
+        if not text:
+            continue
+        if any(_overlaps_text(text, part) for part in parts):
+            continue
         parts.append(f"{text} [{sentence.citation_id}]")
         if sentence.citation_id not in used_citations:
             used_citations.append(sentence.citation_id)
@@ -549,14 +623,16 @@ def _compose_multi_aspect(
         section_bits: list[str] = []
         if include_lead:
             section_lead = synthesise_lead(aspect, picked[0], idf)
+            if section_lead and _overlaps_text(section_lead, picked[0].text):
+                section_lead = ""
             if section_lead:
                 section_bits.append(section_lead)
                 if not lead:
                     lead = section_lead
         for sentence in picked:
-            text = sentence.text.strip()
-            if not text.endswith((".", "!", "?")):
-                text += "."
+            text = _present_sentence(sentence.text)
+            if not text or any(_overlaps_text(text, bit) for bit in section_bits):
+                continue
             section_bits.append(f"{text} [{sentence.citation_id}]")
             used_texts.add(sentence.text.strip().lower())
             selected_all.append(sentence)

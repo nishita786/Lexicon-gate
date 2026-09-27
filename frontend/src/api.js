@@ -2,11 +2,22 @@ const BASE = "/api";
 
 async function request(path, options = {}) {
   const headers = { ...(options.headers || {}) };
-  const response = await fetch(`${BASE}${path}`, {
-    ...options,
-    headers,
-    credentials: "include",
-  });
+  let response;
+  try {
+    response = await fetch(`${BASE}${path}`, {
+      ...options,
+      headers,
+      credentials: "include",
+    });
+  } catch (err) {
+    const raw = String(err?.message || "");
+    if (raw === "Failed to fetch" || err?.name === "TypeError") {
+      throw new Error(
+        "Could not reach the server. Start the backend on port 8000, then refresh."
+      );
+    }
+    throw err;
+  }
   if (!response.ok) {
     if (
       response.status === 401 &&

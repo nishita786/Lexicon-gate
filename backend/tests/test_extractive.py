@@ -222,7 +222,32 @@ def test_compose_multi_aspect_emits_sections_and_citations():
     assert "matrix" in lowered or "gradient" in lowered or "loss" in lowered
 
 
-def test_uncovered_aspects_when_answer_misses_second_clause():
+def test_compose_skips_figure_asides_and_repeated_lead():
+    evidence = [
+        {
+            "citation_id": 1,
+            "text": (
+                "Image as you can see the architecture has three blocks. "
+                "Residual learning is a framework that adds shortcut connections "
+                "so deeper networks can be trained."
+            ),
+            "fused_score": 0.9,
+            "relevance_score": 0.9,
+        }
+    ]
+    result = compose_answer(
+        "What is residual learning?",
+        evidence,
+        question_type="definition",
+    )
+    answer = result["answer"]
+    lowered = answer.lower()
+    assert "shortcut" in lowered or "framework" in lowered
+    assert not lowered.startswith("image")
+    assert "as you can see" not in lowered
+    # The same claim should not be stated twice.
+    assert lowered.count("shortcut") <= 1
+    assert lowered.count("residual learning is a framework") <= 1
     from app.text_utils import uncovered_aspects
 
     query = (
