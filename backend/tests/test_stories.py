@@ -258,3 +258,64 @@ def test_story_collaborators_invite_edit_and_viewer(settings, monkeypatch, tmp_p
     assert stranger.post(f"/api/stories/invites/{d_invite['invite_id']}/decline").status_code == 204
     assert stranger.get("/api/stories/shared").json()["total"] == 0
     assert stranger.post(f"/api/stories/invites/{d_invite['invite_id']}/accept").status_code == 400
+
+
+def test_owner_can_close_and_reopen_work(settings, monkeypatch, tmp_path):
+    owner = _auth_client(settings, monkeypatch, tmp_path, "close.owner@example.com", "Owner")
+    guest = _login_client(settings, "close.guest@example.com", "Lex")
+    story = owner.post("/api/stories", json={"title": "Closeable paper"}).json()
+    story_id = story["story_id"]
+    rid = guest.get("/api/auth/me").json()["researcher_id"]
+    invite = owner.post(
+        f"/api/stories/{story_id}/invites",
+        json={"researcher_id": rid, "role": "editor"},
+    )
+    assert invite.status_code == 200, invite.text
+    assert guest.post(f"/api/stories/invites/{invite.json()['invite_id']}/accept").status_code == 200
+
+    closed = guest.post(f"/api/stories/{story_id}/work-status", json={"status": "completed"})
+    assert closed.status_code == 200, closed.text
+    assert closed.json()["work_status"] == "completed"
+    assert closed.json()["work_closed_by_name"] == "Lex"
+    owner_view = owner.get(f"/api/stories/{story_id}")
+    assert owner_view.status_code == 200
+    assert owner_view.json()["work_closed_by_name"] == "Lex"
+    assert guest.patch(
+        f"/api/stories/{story_id}",
+        json={"sections": {"abstract": "Too late"}},
+    ).status_code == 403
+
+    reopened = owner.post(f"/api/stories/{story_id}/work-status", json={"status": "open"})
+    assert reopened.status_code == 200
+    assert reopened.json()["work_status"] == "open"
+    history = reopened.json()["invites"]
+    assert any(item["status"] == "accepted" and item["recipient_name"] == "Lex" for item in history)
+
+    # Close again so both sides can delete the shared history lines.
+    closed_again = guest.post(f"/api/stories/{story_id}/work-status", json={"status": "completed"})
+    assert closed_again.status_code == 200
+    cleared = owner.delete(f"/api/stories/{story_id}/history/close")
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["work_status"] == "completed"
+    assert cleared.json()["work_closed_by_name"] == ""
+    guest_view = guest.get(f"/api/stories/{story_id}")
+    assert guest_view.json()["work_closed_by_name"] == ""
+    invite_id = history[0]["invite_id"]
+    removed = guest.delete(f"/api/stories/{story_id}/history/invites/{invite_id}")
+    assert removed.status_code == 200, removed.text
+    assert removed.json()["invites"] == []
+    assert owner.get(f"/api/stories/{story_id}").json()["invites"] == []
+
+
+def test_owner_can_invite_by_display_name(settings, monkeypatch, tmp_path):
+    owner = _auth_client(settings, monkeypatch, tmp_path, "name.owner@example.com", "Owner")
+    guest = _login_client(settings, "name.guest@example.com", "Lex")
+    story = owner.post("/api/stories", json={"title": "Named invite"}).json()
+    invite = owner.post(
+        f"/api/stories/{story['story_id']}/invites",
+        json={"researcher_id": "lex", "role": "editor"},
+    )
+    assert invite.status_code == 200, invite.text
+    pending = guest.get("/api/stories/invites/pending")
+    assert pending.status_code == 200
+    assert any(i["story_id"] == story["story_id"] for i in pending.json()["invites"])

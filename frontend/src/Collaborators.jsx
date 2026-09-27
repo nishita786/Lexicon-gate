@@ -3,6 +3,56 @@ import { api } from "./api";
 import { Logo } from "./Auth";
 import { StatusBanner } from "./ui";
 
+function CollabHistory({ story, canDelete, busy, onDeleteInvite, onDeleteClose }) {
+  const invites = [...(story?.invites || [])].sort((a, b) =>
+    String(b.created_at || "").localeCompare(String(a.created_at || ""))
+  );
+  const closedBy = (story?.work_closed_by_name || "").trim();
+  if (!invites.length && !closedBy) return null;
+  return (
+    <div className="collab-history">
+      <h5>History</h5>
+      <ul className="collab-pending-mini">
+        {invites.map((inv) => (
+          <li key={inv.invite_id}>
+            <span>
+              {inv.recipient_name || inv.recipient_researcher_id || "Collaborator"} ·{" "}
+              {inviteHistoryLabel(inv.status)}
+            </span>
+            {canDelete ? (
+              <button
+                type="button"
+                className="ghost"
+                disabled={busy}
+                onClick={() => onDeleteInvite(inv.invite_id)}
+              >
+                Delete
+              </button>
+            ) : null}
+          </li>
+        ))}
+        {closedBy ? (
+          <li>
+            <span>{closedBy} finished and closed the work.</span>
+            {canDelete ? (
+              <button type="button" className="ghost" disabled={busy} onClick={onDeleteClose}>
+                Delete
+              </button>
+            ) : null}
+          </li>
+        ) : null}
+      </ul>
+    </div>
+  );
+}
+
+function inviteHistoryLabel(status) {
+  if (status === "accepted") return "accepted";
+  if (status === "declined") return "declined";
+  if (status === "revoked") return "deleted";
+  return "invited";
+}
+
 const PANEL_NAV = [
   ["home", "Home"],
   ["shared", "Shared"],
@@ -22,7 +72,6 @@ export default function CollaboratorsPage({ session, onOpenPaper, onNavigate }) 
   const [selectedId, setSelectedId] = useState(null);
   const [story, setStory] = useState(null);
   const [inviteRid, setInviteRid] = useState("");
-  const [inviteRole, setInviteRole] = useState("editor");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -30,8 +79,9 @@ export default function CollaboratorsPage({ session, onOpenPaper, onNavigate }) 
 
   const myUserId = session?.user_id || session?.id || "";
   const myRid = session?.researcher_id || "";
-  const isOwner = story && story.author_user_id === myUserId;
-  const pendingOnStory = (story?.invites || []).filter((i) => i.status === "pending");
+  const isOwner = Boolean(
+    story && (story.my_role === "owner" || (myUserId && story.author_user_id === myUserId))
+  );
   const mySharedRole =
     (story?.collaborators || []).find((c) => c.user_id === myUserId)?.role || "viewer";
 
@@ -58,7 +108,7 @@ export default function CollaboratorsPage({ session, onOpenPaper, onNavigate }) 
     setSection(id);
   }
 
-  async function selectPaper(id) {
+  async function selectPaper(id, nextSection = "papers") {
     setBusy(true);
     setError("");
     setMessage("");
@@ -66,7 +116,7 @@ export default function CollaboratorsPage({ session, onOpenPaper, onNavigate }) 
       const payload = await api.getStory(id);
       setSelectedId(id);
       setStory(payload);
-      setSection("papers");
+      setSection(nextSection);
     } catch (err) {
       setError(err.message);
       setStory(null);
@@ -103,15 +153,14 @@ export default function CollaboratorsPage({ session, onOpenPaper, onNavigate }) 
     setError("");
     setMessage("");
     try {
-      await api.lookupResearcher(rid);
       await api.inviteStoryCollaborator(selectedId, {
         researcher_id: rid,
-        role: inviteRole,
+        role: "editor",
       });
       const updated = await api.getStory(selectedId);
       setStory(updated);
       setInviteRid("");
-      setMessage(`Invite sent as ${inviteRole}.`);
+      setMessage("Invite sent.");
       await refresh();
     } catch (err) {
       setError(err.message || "Could not send invite.");
@@ -120,14 +169,15 @@ export default function CollaboratorsPage({ session, onOpenPaper, onNavigate }) 
     }
   }
 
-  async function revokeInvite(inviteId) {
-    if (!selectedId || !isOwner) return;
+  async function deleteInviteHistory(inviteId) {
+    if (!selectedId) return;
     setBusy(true);
     setError("");
     try {
-      const updated = await api.revokeStoryInvite(selectedId, inviteId);
+      const updated = await api.deleteStoryInviteHistory(selectedId, inviteId);
       setStory(updated);
-      setMessage("Invite revoked.");
+      setMessage("History deleted.");
+      await refresh();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -135,14 +185,14 @@ export default function CollaboratorsPage({ session, onOpenPaper, onNavigate }) 
     }
   }
 
-  async function changeCollabRole(userId, role) {
-    if (!selectedId || !isOwner) return;
+  async function deleteCloseHistory() {
+    if (!selectedId) return;
     setBusy(true);
     setError("");
     try {
-      const updated = await api.updateStoryCollaboratorRole(selectedId, userId, role);
+      const updated = await api.deleteStoryCloseHistory(selectedId);
       setStory(updated);
-      setMessage(`Updated role to ${role}.`);
+      setMessage("History deleted.");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -183,6 +233,22 @@ export default function CollaboratorsPage({ session, onOpenPaper, onNavigate }) 
     }
   }
 
+  async function closeWork() {
+    if (!selectedId) return;
+    setBusy(true);
+    setError("");
+    try {
+      const updated = await api.setStoryWorkStatus(selectedId, "completed");
+      setStory(updated);
+      setMessage("Work closed.");
+      await refresh();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function acceptPending(inviteId) {
     setBusy(true);
     setError("");
@@ -190,7 +256,7 @@ export default function CollaboratorsPage({ session, onOpenPaper, onNavigate }) 
       const accepted = await api.acceptStoryInvite(inviteId);
       setMessage("Joined shared workspace.");
       await refresh();
-      await selectPaper(accepted.story_id);
+      await selectPaper(accepted.story_id, "shared");
     } catch (err) {
       setError(err.message);
     } finally {
@@ -264,7 +330,7 @@ export default function CollaboratorsPage({ session, onOpenPaper, onNavigate }) 
                     <ul className="collab-link-list">
                       {shared.map((item) => (
                         <li key={item.story_id}>
-                          <button type="button" onClick={() => selectPaper(item.story_id)}>
+                          <button type="button" onClick={() => selectPaper(item.story_id, "shared")}>
                             <strong>{item.title}</strong>
                             <span>
                               {item.my_role || "viewer"}
@@ -275,6 +341,35 @@ export default function CollaboratorsPage({ session, onOpenPaper, onNavigate }) 
                       ))}
                     </ul>
                   )}
+                  {story && !isOwner ? (
+                    <div className="collab-manage-pane">
+                      <div className="collab-manage-head">
+                        <div>
+                          <p className="collab-mini-label">Shared paper</p>
+                          <h4>{story.title}</h4>
+                        </div>
+                        {story.work_status !== "completed" && mySharedRole === "editor" ? (
+                          <button type="button" className="primary" disabled={busy} onClick={closeWork}>
+                            Close work
+                          </button>
+                        ) : null}
+                      </div>
+                      {story.work_status === "completed" ? (
+                        <p className="collab-complete">
+                          {story.work_closed_by_name
+                            ? `${story.work_closed_by_name} finished and closed this paper.`
+                            : "This paper is closed."}
+                        </p>
+                      ) : null}
+                      <CollabHistory
+                        story={story}
+                        canDelete={Boolean(story.my_role)}
+                        busy={busy}
+                        onDeleteInvite={deleteInviteHistory}
+                        onDeleteClose={deleteCloseHistory}
+                      />
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
 
@@ -334,7 +429,9 @@ export default function CollaboratorsPage({ session, onOpenPaper, onNavigate }) 
                               onClick={() => selectPaper(item.story_id)}
                             >
                               <strong>{item.title}</strong>
-                              <span>{item.status}</span>
+                              <span>
+                                {item.work_status === "completed" ? "completed" : item.status}
+                              </span>
                             </button>
                           </li>
                         ))}
@@ -354,15 +451,30 @@ export default function CollaboratorsPage({ session, onOpenPaper, onNavigate }) 
                             </p>
                             <h4>{story.title}</h4>
                           </div>
-                          <button
-                            type="button"
-                            className="primary"
-                            disabled={busy}
-                            onClick={() => onOpenPaper?.(story.story_id)}
-                          >
-                            Open in Write
-                          </button>
+                          <div className="row">
+                            {story.work_status !== "completed" && (isOwner || mySharedRole === "editor") ? (
+                              <button type="button" className="primary" disabled={busy} onClick={closeWork}>
+                                Close work
+                              </button>
+                            ) : null}
+                            <button
+                              type="button"
+                              className="ghost"
+                              disabled={busy}
+                              onClick={() => onOpenPaper?.(story.story_id)}
+                            >
+                              Open in Write
+                            </button>
+                          </div>
                         </div>
+
+                        {story.work_status === "completed" ? (
+                          <p className="collab-complete">
+                            {story.work_closed_by_name
+                              ? `${story.work_closed_by_name} finished and closed this paper.`
+                              : "This paper is closed."}
+                          </p>
+                        ) : null}
 
                         <ul className="collab-people">
                           <li>
@@ -373,16 +485,6 @@ export default function CollaboratorsPage({ session, onOpenPaper, onNavigate }) 
                               <strong>{isOwner ? "You" : story.author_name || "Owner"}</strong>
                               <em>owner</em>
                             </div>
-                            {!isOwner ? (
-                              <button
-                                type="button"
-                                className="ghost"
-                                disabled={busy}
-                                onClick={() => removeCollab(myUserId)}
-                              >
-                                Leave
-                              </button>
-                            ) : null}
                           </li>
                           {(story.collaborators || [])
                             .filter((c) => c.user_id !== myUserId)
@@ -393,77 +495,44 @@ export default function CollaboratorsPage({ session, onOpenPaper, onNavigate }) 
                                 </span>
                                 <div>
                                   <strong>{c.name || c.researcher_id || "Collaborator"}</strong>
-                                  <em>{c.role}</em>
+                                  <em>editing</em>
                                 </div>
                                 {isOwner ? (
-                                  <div className="collab-inline-actions">
-                                    <select
-                                      value={c.role}
-                                      disabled={busy}
-                                      onChange={(e) => changeCollabRole(c.user_id, e.target.value)}
-                                      aria-label={`Role for ${c.name || c.researcher_id}`}
-                                    >
-                                      <option value="editor">Editor</option>
-                                      <option value="viewer">Viewer</option>
-                                    </select>
-                                    <button
-                                      type="button"
-                                      className="ghost"
-                                      disabled={busy}
-                                      onClick={() => removeCollab(c.user_id)}
-                                    >
-                                      Remove
-                                    </button>
-                                  </div>
+                                  <button
+                                    type="button"
+                                    className="ghost"
+                                    disabled={busy}
+                                    onClick={() => removeCollab(c.user_id)}
+                                  >
+                                    Delete
+                                  </button>
                                 ) : null}
                               </li>
                             ))}
                         </ul>
 
-                        {isOwner ? (
+                        {isOwner && story.work_status !== "completed" ? (
                           <div className="collab-invite-row-form">
                             <input
                               value={inviteRid}
-                              onChange={(e) => setInviteRid(e.target.value.toUpperCase())}
-                              placeholder="Teammate’s Researcher ID"
+                              onChange={(e) => setInviteRid(e.target.value)}
+                              placeholder="Name or user ID"
                               disabled={busy}
-                              aria-label="Collaborator Researcher ID"
+                              aria-label="Collaborator name or user ID"
                             />
-                            <select
-                              value={inviteRole}
-                              onChange={(e) => setInviteRole(e.target.value)}
-                              disabled={busy}
-                              aria-label="Invite role"
-                            >
-                              <option value="editor">Editor</option>
-                              <option value="viewer">Viewer</option>
-                            </select>
                             <button type="button" className="primary" disabled={busy} onClick={sendInvite}>
                               Invite
                             </button>
                           </div>
                         ) : null}
 
-                        {isOwner && pendingOnStory.length ? (
-                          <ul className="collab-pending-mini">
-                            {pendingOnStory.map((inv) => (
-                              <li key={inv.invite_id}>
-                                <span>
-                                  {inv.recipient_name || inv.recipient_researcher_id} · pending{" "}
-                                  {inv.role}
-                                </span>
-                                <button
-                                  type="button"
-                                  className="ghost"
-                                  disabled={busy}
-                                  onClick={() => revokeInvite(inv.invite_id)}
-                                >
-                                  Revoke
-                                </button>
-                              </li>
-                            ))}
-                          </ul>
-                        ) : null}
+                        <CollabHistory
+                          story={story}
+                          canDelete={Boolean(story.my_role)}
+                          busy={busy}
+                          onDeleteInvite={deleteInviteHistory}
+                          onDeleteClose={deleteCloseHistory}
+                        />
 
                         <p className="collab-id-footnote">
                           Your ID: <code>{myRid || "—"}</code>
@@ -479,8 +548,7 @@ export default function CollaboratorsPage({ session, onOpenPaper, onNavigate }) 
               <p className="collab-hero-sub">Shared workspace</p>
               <h2 className="collab-hero-title">Collaborators</h2>
               <p className="collab-hero-copy">
-                Invite teammates by Researcher ID. Editors co-write IEEE sections with you. Viewers
-                only read — nothing more.
+                Type a name or Researcher ID to invite someone. They accept, edit, and close the paper when they are finished.
               </p>
               {myRid ? (
                 <p className="collab-hero-rid">

@@ -2050,10 +2050,17 @@ td.win { color: var(--success); }
 .flag.neutral { color: var(--ink-muted); }
 .flag.good { color: #fff; background: rgba(216, 224, 196, 0.28); }
 
-.upload-btn {
-  display: inline-flex;
-  align-items: center;
-  cursor: pointer;
+.library-head { position: relative; }
+.upload-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .banner {
@@ -3765,6 +3772,24 @@ button.danger:hover:not(:disabled) {
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
+}
+.collab-complete {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 155, 98, 0.18);
+  border: 1px solid rgba(255, 176, 132, 0.45);
+  font-size: 14px;
+}
+.collab-history {
+  margin-top: 14px;
+}
+.collab-history h5 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
 }
 .collab-manage-head h4 {
   margin: 2px 0 0;

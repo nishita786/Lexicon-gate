@@ -22,6 +22,8 @@ def settings(tmp_path, monkeypatch) -> Settings:
     monkeypatch.setenv("SELFRAG_USE_LLM_JUDGE", "true")
     monkeypatch.setenv("SELFRAG_NLI_ALLOW_DOWNLOAD", "false")
     monkeypatch.setenv("SELFRAG_AUTH_REQUIRED", "false")
+    monkeypatch.setenv("SELFRAG_SUPABASE_URL", "")
+    monkeypatch.setenv("SELFRAG_SUPABASE_SERVICE_KEY", "")
     get_settings.cache_clear()
     cfg = Settings(
         data_dir=data,
@@ -35,6 +37,8 @@ def settings(tmp_path, monkeypatch) -> Settings:
         use_llm_judge=True,
         nli_allow_download=False,
         auth_required=False,
+        supabase_url="",
+        supabase_service_key="",
     )
     cfg.ensure_dirs()
     return cfg

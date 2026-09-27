@@ -149,6 +149,23 @@ def find_by_user_id(settings: Settings, user_id: str) -> dict[str, Any] | None:
     return None
 
 
+def find_users_by_name(settings: Settings, name: str) -> list[dict[str, Any]]:
+    """Case-insensitive exact display-name matches. Empty if the name is blank."""
+    from ..supabase import users as sb_users
+
+    needle = (name or "").strip().lower()
+    if len(needle) < 2:
+        return []
+    if sb_users.enabled():
+        return sb_users.find_users_by_name(needle)
+    with _lock:
+        return [
+            user
+            for user in _load(users_path(settings))
+            if str(user.get("name") or "").strip().lower() == needle
+        ]
+
+
 def find_by_researcher_id(settings: Settings, researcher_id: str) -> dict[str, Any] | None:
     from ..supabase import users as sb_users
 

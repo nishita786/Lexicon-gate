@@ -18,6 +18,7 @@ from ..models.stories import (
     StoryInviteCreate,
     StoryListResponse,
     StoryUpdate,
+    WorkStatusUpdate,
 )
 from ..services.auth import users as user_store
 from ..services.stories import store as story_store
@@ -35,6 +36,12 @@ def _require_user(request: Request) -> dict:
 
 def _user_id(user: dict) -> str:
     return str(user.get("user_id") or user.get("id") or "")
+
+
+def _identity(user: dict) -> dict:
+    settings = get_settings()
+    full = user_store.find_by_user_id(settings, _user_id(user)) or user
+    return full
 
 
 def _with_role(story: Story, user_id: str) -> StoryDetail:
@@ -114,14 +121,18 @@ def list_shared(request: Request) -> StoryListResponse:
 
 @router.get("/invites/pending", response_model=PendingStoryInviteList)
 def pending_story_invites(request: Request) -> PendingStoryInviteList:
-    user = _require_user(request)
-    invites = story_store.list_pending_invites_for_user(_user_id(user))
+    user = _identity(_require_user(request))
+    invites = story_store.list_pending_invites_for_user(
+        _user_id(user),
+        researcher_id=str(user.get("researcher_id") or ""),
+        email=str(user.get("email") or ""),
+    )
     return PendingStoryInviteList(invites=invites)
 
 
 @router.post("/invites/{invite_id}/accept", response_model=StoryDetail)
 def accept_story_invite(invite_id: str, request: Request) -> StoryDetail:
-    user = _require_user(request)
+    user = _identity(_require_user(request))
     try:
         story = story_store.accept_invite(
             invite_id,
@@ -141,9 +152,14 @@ def accept_story_invite(invite_id: str, request: Request) -> StoryDetail:
 
 @router.post("/invites/{invite_id}/decline", status_code=204)
 def decline_story_invite(invite_id: str, request: Request) -> Response:
-    user = _require_user(request)
+    user = _identity(_require_user(request))
     try:
-        story_store.decline_invite(invite_id, user_id=_user_id(user))
+        story_store.decline_invite(
+            invite_id,
+            user_id=_user_id(user),
+            researcher_id=str(user.get("researcher_id") or ""),
+            email=str(user.get("email") or ""),
+        )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except PermissionError as exc:
@@ -229,6 +245,25 @@ def publish_story(story_id: str, request: Request) -> StoryDetail:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.post("/{story_id}/work-status", response_model=StoryDetail)
+def update_work_status(story_id: str, payload: WorkStatusUpdate, request: Request) -> StoryDetail:
+    user = _identity(_require_user(request))
+    try:
+        story = story_store.set_work_status(
+            story_id,
+            actor_user_id=_user_id(user),
+            actor_name=str(user.get("name") or ""),
+            status=payload.status,
+        )
+        return _with_role(story, _user_id(user))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/{story_id}/unpublish", response_model=StoryDetail)
 def unpublish_story(story_id: str, request: Request) -> StoryDetail:
     user = _require_user(request)
@@ -257,16 +292,27 @@ def delete_story(story_id: str, request: Request) -> Response:
 def invite_collaborator(
     story_id: str, payload: StoryInviteCreate, request: Request
 ) -> StoryInvite:
-    user = _require_user(request)
+    user = _identity(_require_user(request))
     settings = get_settings()
-    recipient = user_store.find_by_researcher_id(settings, payload.researcher_id)
+    raw = (payload.researcher_id or "").strip()
+    recipient = user_store.find_by_researcher_id(settings, raw)
     if recipient is None:
-        raise HTTPException(status_code=404, detail="No researcher found with that ID.")
+        matches = user_store.find_users_by_name(settings, raw)
+        if len(matches) == 1:
+            recipient = matches[0]
+        elif len(matches) > 1:
+            raise HTTPException(
+                status_code=409,
+                detail="More than one researcher has that name. Use their Researcher ID.",
+            )
+    if recipient is None:
+        raise HTTPException(status_code=404, detail="No researcher found with that ID or name.")
     try:
         return story_store.create_invite(
             story_id,
             owner_user_id=_user_id(user),
             owner_name=str(user.get("name") or ""),
+            owner_researcher_id=str(user.get("researcher_id") or ""),
             recipient_user_id=str(recipient.get("user_id") or ""),
             recipient_researcher_id=str(recipient.get("researcher_id") or ""),
             recipient_name=str(recipient.get("name") or ""),
@@ -279,6 +325,32 @@ def invite_collaborator(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/{story_id}/history/invites/{invite_id}", response_model=StoryDetail)
+def delete_invite_history(story_id: str, invite_id: str, request: Request) -> StoryDetail:
+    user = _require_user(request)
+    try:
+        story = story_store.delete_invite_history(
+            story_id, invite_id, actor_user_id=_user_id(user)
+        )
+        return _with_role(story, _user_id(user))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@router.delete("/{story_id}/history/close", response_model=StoryDetail)
+def delete_close_history(story_id: str, request: Request) -> StoryDetail:
+    user = _require_user(request)
+    try:
+        story = story_store.clear_close_history(story_id, actor_user_id=_user_id(user))
+        return _with_role(story, _user_id(user))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 @router.delete("/{story_id}/invites/{invite_id}", response_model=StoryDetail)

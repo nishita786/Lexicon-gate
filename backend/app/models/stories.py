@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 StoryStatus = Literal["draft", "published"]
+WorkStatus = Literal["open", "completed"]
 StoryFormat = Literal["freeform", "ieee"]
 StoryCollabRole = Literal["editor", "viewer"]
 StoryInviteStatus = Literal["pending", "accepted", "declined", "revoked"]
@@ -79,7 +80,7 @@ class StoryInvite(BaseModel):
 
 
 class StoryInviteCreate(BaseModel):
-    researcher_id: str = Field(..., min_length=4, max_length=32)
+    researcher_id: str = Field(..., min_length=2, max_length=80)
     role: StoryCollabRole = "editor"
 
     @field_validator("researcher_id")
@@ -93,6 +94,10 @@ class StoryInviteCreate(BaseModel):
 
 class StoryCollaboratorUpdate(BaseModel):
     role: StoryCollabRole
+
+
+class WorkStatusUpdate(BaseModel):
+    status: WorkStatus
 
 
 class PendingStoryInvite(BaseModel):
@@ -119,6 +124,10 @@ class Story(BaseModel):
     author_name: str = ""
     author_researcher_id: str = ""
     status: StoryStatus = "draft"
+    work_status: WorkStatus = "open"
+    work_closed_at: str | None = None
+    work_closed_by_name: str = ""
+    work_closed_by_user_id: str = ""
     format: StoryFormat = "ieee"
     authors_line: str = ""
     affiliation: str = ""
@@ -181,6 +190,7 @@ class StoryListItem(BaseModel):
     author_name: str = ""
     author_researcher_id: str = ""
     status: StoryStatus
+    work_status: WorkStatus = "open"
     format: StoryFormat = "ieee"
     my_role: StoryAccessRole | None = None
     created_at: str

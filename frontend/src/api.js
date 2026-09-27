@@ -420,6 +420,12 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
+  setStoryWorkStatus: (id, status) =>
+    request(`/stories/${encodeURIComponent(id)}/work-status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    }),
   publishStory: (id) =>
     request(`/stories/${encodeURIComponent(id)}/publish`, { method: "POST" }),
   unpublishStory: (id) =>
@@ -442,6 +448,13 @@ export const api = {
       `/stories/${encodeURIComponent(storyId)}/invites/${encodeURIComponent(inviteId)}`,
       { method: "DELETE" }
     ),
+  deleteStoryInviteHistory: (storyId, inviteId) =>
+    request(
+      `/stories/${encodeURIComponent(storyId)}/history/invites/${encodeURIComponent(inviteId)}`,
+      { method: "DELETE" }
+    ),
+  deleteStoryCloseHistory: (storyId) =>
+    request(`/stories/${encodeURIComponent(storyId)}/history/close`, { method: "DELETE" }),
   updateStoryCollaboratorRole: (storyId, userId, role) =>
     request(
       `/stories/${encodeURIComponent(storyId)}/collaborators/${encodeURIComponent(userId)}`,

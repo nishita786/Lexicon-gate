@@ -1545,14 +1545,14 @@ function Library({ docs, onChange }) {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [uploadCount, setUploadCount] = useState(0);
+  const fileRef = useRef(null);
   const MAX_UPLOAD_FILES = 20;
 
-  async function onUpload(event) {
-    const files = Array.from(event.target.files || []);
-    if (!files.length) return;
+  async function uploadFiles(list) {
+    const files = Array.from(list || []);
+    if (!files.length || busy) return;
     if (files.length > MAX_UPLOAD_FILES) {
       setError(`Select up to ${MAX_UPLOAD_FILES} files at once (you picked ${files.length}).`);
-      event.target.value = "";
       return;
     }
     setBusy(true);
@@ -1570,8 +1570,38 @@ function Library({ docs, onChange }) {
     } finally {
       setBusy(false);
       setUploadCount(0);
-      event.target.value = "";
     }
+  }
+
+  async function openPicker() {
+    if (busy) return;
+    if (typeof window.showOpenFilePicker === "function") {
+      try {
+        const handles = await window.showOpenFilePicker({
+          multiple: true,
+          types: [
+            {
+              description: "Papers",
+              accept: {
+                "application/pdf": [".pdf"],
+                "text/plain": [".txt", ".md", ".markdown"],
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
+              },
+            },
+          ],
+        });
+        const files = await Promise.all(handles.map((handle) => handle.getFile()));
+        await uploadFiles(files);
+        return;
+      } catch (err) {
+        if (err?.name === "AbortError") return;
+      }
+    }
+    const input = fileRef.current;
+    if (!input) return;
+    input.multiple = true;
+    input.value = "";
+    input.click();
   }
 
   async function remove(id) {
@@ -1593,27 +1623,30 @@ function Library({ docs, onChange }) {
 
   return (
     <>
-      <div className="page-title">
+      <div className="page-title library-head">
         <div>
           <h2>Library</h2>
           <p>
-            Sources Ask can use. Add papers from Find papers, or upload up to {MAX_UPLOAD_FILES} PDFs
-            or text files in one go. Citation metadata comes from the paper record or the file name.
+            Sources Ask can use. Click Upload files and select several PDFs or text files in the same
+            dialog. Citation metadata comes from the paper record or the file name.
           </p>
         </div>
-        <label className={`primary upload-btn${busy ? " is-busy" : ""}`}>
-          {busy
-            ? `Indexing ${uploadCount || "…"}…`
-            : `Upload up to ${MAX_UPLOAD_FILES} files`}
-          <input
-            type="file"
-            multiple
-            accept=".pdf,.txt,.md,.markdown,.docx,application/pdf,text/plain,text/markdown"
-            hidden
-            disabled={busy}
-            onChange={onUpload}
-          />
-        </label>
+        <button type="button" className="primary" disabled={busy} onClick={openPicker}>
+          {busy ? `Indexing ${uploadCount || "…"}…` : "Upload files"}
+        </button>
+        <input
+          ref={fileRef}
+          className="upload-file-input"
+          type="file"
+          multiple
+          accept=".pdf,.txt,.md,.markdown,.docx"
+          tabIndex={-1}
+          onChange={(event) => {
+            const chosen = event.target.files;
+            event.target.value = "";
+            uploadFiles(chosen);
+          }}
+        />
       </div>
       <div className="spotlight spotlight-violet">
         <p className="spotlight-kicker">Your sources</p>
@@ -1623,7 +1656,7 @@ function Library({ docs, onChange }) {
       {message && <StatusBanner tone="success">{message}</StatusBanner>}
       {!docs.length && (
         <EmptyState title="No sources yet">
-          Select multiple PDFs in the file picker (hold Cmd/Ctrl), or search academic papers in{" "}
+          Click Upload files and select several at once, or search academic papers in{" "}
           <strong>Find papers</strong>.
         </EmptyState>
       )}

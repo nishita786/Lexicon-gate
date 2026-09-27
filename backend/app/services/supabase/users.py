@@ -68,6 +68,17 @@ def find_by_user_id(user_id: str) -> dict[str, Any] | None:
     return _row_to_user(rows[0]) if rows else None
 
 
+def find_users_by_name(name: str) -> list[dict[str, Any]]:
+    needle = (name or "").strip().lower()
+    if len(needle) < 2 or any(ch in needle for ch in ",.()"):
+        return []
+    rows = rest_select(
+        _TABLE,
+        params={"name": f"ilike.{needle}", "select": "*", "limit": "8"},
+    )
+    return [_row_to_user(row) for row in rows]
+
+
 def find_by_researcher_id(researcher_id: str) -> dict[str, Any] | None:
     rid = str(researcher_id or "").strip().upper()
     if not rid:

@@ -138,6 +138,7 @@ def _to_list_item(story: Story, *, my_role: str | None = None) -> StoryListItem:
         author_name=story.author_name,
         author_researcher_id=story.author_researcher_id,
         status=story.status,
+        work_status=story.work_status,
         format=story.format,
         my_role=my_role,  # type: ignore[arg-type]
         created_at=story.created_at,
@@ -146,8 +147,31 @@ def _to_list_item(story: Story, *, my_role: str | None = None) -> StoryListItem:
     )
 
 
-def is_owner(story: Story, user_id: str) -> bool:
-    return bool(user_id) and story.author_user_id == user_id
+def is_owner(story: Story, user_id: str, *, researcher_id: str = "") -> bool:
+    uid = (user_id or "").strip()
+    author = (story.author_user_id or "").strip()
+    if uid and author == uid:
+        return True
+    rid = (researcher_id or "").strip().upper()
+    author_rid = (story.author_researcher_id or "").strip().upper()
+    return bool(rid and author_rid and rid == author_rid)
+
+
+def _invite_matches_user(
+    invite: StoryInvite,
+    *,
+    user_id: str = "",
+    researcher_id: str = "",
+    email: str = "",
+) -> bool:
+    uid = (user_id or "").strip()
+    if uid and (invite.recipient_user_id or "").strip() == uid:
+        return True
+    rid = (researcher_id or "").strip().upper()
+    if rid and (invite.recipient_researcher_id or "").strip().upper() == rid:
+        return True
+    mail = (email or "").strip().lower()
+    return bool(mail and (invite.recipient_email or "").strip().lower() == mail)
 
 
 def collaborator_for(story: Story, user_id: str) -> StoryCollaborator | None:
@@ -172,6 +196,8 @@ def can_view(story: Story, user_id: str) -> bool:
 
 
 def can_edit(story: Story, user_id: str) -> bool:
+    if (story.work_status or "open") == "completed":
+        return False
     role = access_role(story, user_id)
     return role in ("owner", "editor")
 
@@ -403,6 +429,35 @@ def update_story(
         return _save(story)
 
 
+def set_work_status(
+    story_id: str,
+    *,
+    actor_user_id: str,
+    actor_name: str = "",
+    status: str,
+) -> Story:
+    """The owner or an editor marks the shared paper finished, or the owner reopens it."""
+    if status not in ("open", "completed"):
+        raise ValueError("Work status must be open or completed.")
+    with _store_lock():
+        story = _load(story_id)
+        if story is None:
+            raise LookupError("Story not found.")
+        role = access_role(story, actor_user_id)
+        if status == "completed":
+            if role not in ("owner", "editor"):
+                raise PermissionError("Only someone editing this paper can close it.")
+            story.work_closed_by_name = (actor_name or "").strip() or "Collaborator"
+            story.work_closed_by_user_id = (actor_user_id or "").strip()
+            story.work_closed_at = _utcnow_iso()
+        else:
+            if not is_owner(story, actor_user_id):
+                raise PermissionError("Only the owner can reopen this work.")
+        story.work_status = status  # type: ignore[assignment]
+        story.updated_at = _utcnow_iso()
+        return _save(story)
+
+
 def publish_story(story_id: str, *, author_user_id: str) -> Story:
     with _store_lock():
         story = _load(story_id)
@@ -456,6 +511,7 @@ def create_invite(
     *,
     owner_user_id: str,
     owner_name: str = "",
+    owner_researcher_id: str = "",
     recipient_user_id: str,
     recipient_researcher_id: str = "",
     recipient_name: str = "",
@@ -466,7 +522,7 @@ def create_invite(
         story = _load(story_id)
         if story is None:
             raise LookupError("Story not found.")
-        if not is_owner(story, owner_user_id):
+        if not is_owner(story, owner_user_id, researcher_id=owner_researcher_id):
             raise PermissionError("Only the owner can invite collaborators.")
         if role not in ("editor", "viewer"):
             raise ValueError("Role must be editor or viewer.")
@@ -522,15 +578,60 @@ def revoke_invite(story_id: str, invite_id: str, *, owner_user_id: str) -> Story
         return _save(story)
 
 
-def list_pending_invites_for_user(user_id: str) -> list[PendingStoryInvite]:
+def delete_invite_history(story_id: str, invite_id: str, *, actor_user_id: str) -> Story:
+    """Remove one invite line from the shared history. A pending invite is cancelled too."""
+    with _store_lock():
+        story = _load(story_id)
+        if story is None:
+            raise LookupError("Story not found.")
+        if access_role(story, actor_user_id) not in ("owner", "editor", "viewer"):
+            raise PermissionError("Only people on this paper can delete history.")
+        needle = (invite_id or "").strip()
+        remaining = [inv for inv in (story.invites or []) if inv.invite_id != needle]
+        if len(remaining) == len(story.invites or []):
+            raise LookupError("History entry not found.")
+        story.invites = remaining
+        story.updated_at = _utcnow_iso()
+        return _save(story)
+
+
+def clear_close_history(story_id: str, *, actor_user_id: str) -> Story:
+    """Drop the 'finished and closed' line. The paper stays closed."""
+    with _store_lock():
+        story = _load(story_id)
+        if story is None:
+            raise LookupError("Story not found.")
+        if access_role(story, actor_user_id) not in ("owner", "editor", "viewer"):
+            raise PermissionError("Only people on this paper can delete history.")
+        if not (
+            (story.work_closed_by_name or "").strip()
+            or (story.work_closed_by_user_id or "").strip()
+            or story.work_closed_at
+        ):
+            raise LookupError("No close record to delete.")
+        story.work_closed_by_name = ""
+        story.work_closed_by_user_id = ""
+        story.work_closed_at = None
+        story.updated_at = _utcnow_iso()
+        return _save(story)
+
+
+def list_pending_invites_for_user(
+    user_id: str,
+    *,
+    researcher_id: str = "",
+    email: str = "",
+) -> list[PendingStoryInvite]:
     with _store_lock():
         uid = (user_id or "").strip()
-        if not uid:
+        if not uid and not (researcher_id or "").strip() and not (email or "").strip():
             return []
         pending: list[PendingStoryInvite] = []
         for story in _all_stories():
             for inv in story.invites or []:
-                if inv.status == "pending" and inv.recipient_user_id == uid:
+                if inv.status == "pending" and _invite_matches_user(
+                    inv, user_id=uid, researcher_id=researcher_id, email=email
+                ):
                     pending.append(
                         PendingStoryInvite(
                             invite_id=inv.invite_id,
@@ -558,7 +659,9 @@ def accept_invite(invite_id: str, *, user_id: str, name: str = "", email: str = 
                     continue
                 if inv.status != "pending":
                     raise ValueError("This invite is no longer pending.")
-                if inv.recipient_user_id != uid:
+                if not _invite_matches_user(
+                    inv, user_id=uid, researcher_id=researcher_id, email=email
+                ):
                     raise PermissionError("This invite is for a different account.")
                 if collaborator_for(story, uid) is None:
                     story.collaborators = [
@@ -585,7 +688,13 @@ def accept_invite(invite_id: str, *, user_id: str, name: str = "", email: str = 
         raise LookupError("Invite not found.")
 
 
-def decline_invite(invite_id: str, *, user_id: str) -> None:
+def decline_invite(
+    invite_id: str,
+    *,
+    user_id: str,
+    researcher_id: str = "",
+    email: str = "",
+) -> None:
     with _store_lock():
         uid = (user_id or "").strip()
         needle = (invite_id or "").strip()
@@ -597,7 +706,9 @@ def decline_invite(invite_id: str, *, user_id: str) -> None:
                     continue
                 if inv.status != "pending":
                     raise ValueError("This invite is no longer pending.")
-                if inv.recipient_user_id != uid:
+                if not _invite_matches_user(
+                    inv, user_id=uid, researcher_id=researcher_id, email=email
+                ):
                     raise PermissionError("This invite is for a different account.")
                 story.invites = [
                     (
